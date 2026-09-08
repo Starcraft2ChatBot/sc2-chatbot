@@ -2,7 +2,6 @@ from __future__ import annotations
 import asyncio
 import random
 import logging
-from pathlib import Path
 
 from .config_loader import Config
 from .logger import setup_logger
@@ -69,9 +68,27 @@ class SC2ChatBot:
         return SimulatedChatBackend(self_name="ChatBot")
 
     def reload_config(self) -> None:
+        """Reload YAML settings. Note: changing chat_backend requires a full restart."""
+        old_backend = self.config.chat_backend
         self.config = Config.load(self.config_path)
         self.triggers = TriggerEngine(self.config.triggers, self.config.canned_blocks)
-        self.logger.info("Configuration reloaded")
+
+        # Keep personality state in sync with newly loaded values
+        self.personality_state["aggressiveness"] = self.config.personality.aggressiveness
+        self.personality_state["political_mode"] = self.config.personality.political_mode
+        self.personality_state["response_length"] = self.config.personality.response_length
+        self.personality_state["emoji_intensity"] = self.config.personality.emoji_intensity
+        self.personality_state["topics"] = dict(self.config.personality.topics)
+
+        if self.config.chat_backend != old_backend:
+            self.logger.warning(
+                "chat_backend changed from '%s' to '%s'. "
+                "A full restart is required for the new backend to take effect.",
+                old_backend,
+                self.config.chat_backend,
+            )
+        else:
+            self.logger.info("Configuration reloaded")
 
     async def _human_delay(self) -> None:
         lo = self.config.behaviour.get("min_reply_delay_sec", 1.2)
