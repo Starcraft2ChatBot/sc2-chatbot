@@ -1,0 +1,109 @@
+# ====================== REQUIRED ======================
+gemini:
+  api_key: "YOUR_GEMINI_API_KEY"          # or set GEMINI_API_KEY env var
+  model: "gemini-2.0-flash"               # change to latest stable if needed
+  temperature: 0.85
+  max_output_tokens: 180
+
+owner:
+  names:                                  # case-insensitive
+    - "YourBattleTag"
+    - "YourInGameName"
+  command_prefix: "!"
+
+# ====================== PERSONALITY ======================
+personality:
+  aggressiveness: 5                       # 1 = friendly, 10 = toxic
+  political_mode: "neutral"               # neutral | left | right | propaganda_left | propaganda_right
+  response_length: "medium"               # short | medium | long
+  emoji_intensity: 3                      # 0–10
+  topics:
+    politics: true
+    current_events: true
+    in_game_strategy: true
+    memes: true
+    personal: false
+  channel_overrides:
+    all:
+      aggressiveness: 6
+    team:
+      aggressiveness: 3
+    whisper:
+      aggressiveness: 4
+
+# ====================== BEHAVIOUR ======================
+behaviour:
+  min_reply_delay_sec: 1.2
+  max_reply_delay_sec: 7.5
+  typo_chance: 0.08
+  reply_probability: 0.75
+  ignore_self: true
+  ignore_system: true
+
+anti_spam:
+  global_cooldown_sec: 8
+  per_player_cooldown_sec: 25
+  max_replies_per_player_per_minute: 3
+  mute_list: []
+  rate_limit_window_sec: 60
+
+memory:
+  max_messages_per_player: 12
+  max_total_context_tokens: 2500
+
+# ====================== TRIGGERS / CANNED ======================
+triggers:
+  - name: "gg"
+    patterns:
+      - "(?i)\\bgg\\b"
+      - "(?i)\\bgood\\s*game\\b"
+    response: "gg wp"
+    priority: 100
+    cooldown_sec: 15
+    channels: ["all", "team"]
+
+  - name: "glhf"
+    patterns:
+      - "(?i)\\bgl\\s*hf\\b"
+      - "(?i)\\bgood\\s*luck\\b"
+    response: "gl hf, may the better micro win"
+    priority: 90
+    cooldown_sec: 30
+
+canned_blocks:
+  - id: "long_rant"
+    text: |
+      Honestly the balance team has no idea what they're doing.
+      This patch is a joke.
+    triggers: ["(?i)balance", "(?i)this patch"]
+
+# ====================== LOGGING ======================
+logging:
+  level: "INFO"
+  file: "logs/sc2_chatbot.log"
+  max_bytes: 10485760
+  backup_count: 5
+  console: true
+
+# ====================== CHAT BACKEND ======================
+# "simulated"  = safe testing mode (no live SC2 interaction)
+# "sc2_stub"   = live client via keyboard + optional OCR (HIGH ToS RISK)
+# See README.md section "Enabling live SC2 chat reading + automatic AI replies"
+chat_backend: "simulated"
+
+sc2_stub:
+  window_title: "StarCraft II"
+  chat_key: "enter"
+  send_key: "enter"
+  typing_speed_cps: 11
+
+  # Set to true ONLY after you have measured chat_region and installed OCR deps
+  ocr_enabled: false
+  poll_interval_sec: 1.8
+
+  # Pixel region of the in-game chat box: [left, top, width, height]
+  # Example only – you must measure this on your own screen
+  chat_region: null                       # e.g. [20, 650, 480, 220]
+
+  # Optional full path to tesseract if it is not in PATH
+  tesseract_cmd: null
