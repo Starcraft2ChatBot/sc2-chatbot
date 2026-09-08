@@ -53,10 +53,11 @@ This is the safe way to test personality, triggers, and Gemini replies.
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp config/config.example.yaml config/config.yaml
-# Edit config.yaml → put your Gemini API key (or set GEMINI_API_KEY env var)
 python main.py
 ```
+
+On the first run the bot automatically creates `config/config.yaml` from the example.  
+Then edit that file and put your Gemini API key (or set the `GEMINI_API_KEY` environment variable) and run again.
 
 You can inject test messages into the simulated backend to see the AI reply in real time.
 
@@ -120,7 +121,7 @@ Once messages appear in the configured screen region, the bot will automatically
 
 ## Configuration overview
 
-All settings live in `config/config.yaml` (copy from the example).
+All settings live in `config/config.yaml` (auto-created from the example on first run).
 
 Key sections:
 - `personality` – aggressiveness, political mode, length, emoji intensity, topic biases
