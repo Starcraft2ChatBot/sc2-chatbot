@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+import shutil
 from pathlib import Path
 from typing import Any, Dict
 import yaml
@@ -41,10 +42,28 @@ class Config(BaseModel):
     @classmethod
     def load(cls, path: str | Path = "config/config.yaml") -> "Config":
         path = Path(path)
+
+        # First-run convenience: create config.yaml from the example if it is missing
         if not path.exists():
-            raise FileNotFoundError(f"Config not found: {path}")
+            example = path.parent / "config.example.yaml"
+            if example.exists():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(example, path)
+                print(
+                    f"[config] Created {path} from {example}.\n"
+                    f"         Edit it and put your Gemini API key (or set GEMINI_API_KEY)."
+                )
+            else:
+                raise FileNotFoundError(
+                    f"Config not found: {path}\n"
+                    f"Also missing the example file: {example}"
+                )
+
         with path.open(encoding="utf-8") as f:
-            data = yaml.safe_load(f)
+            data = yaml.safe_load(f) or {}
+
+        # Prefer environment variable over an empty key in the file
         if not data.get("gemini", {}).get("api_key"):
             data.setdefault("gemini", {})["api_key"] = os.getenv("GEMINI_API_KEY", "")
+
         return cls(**data)
