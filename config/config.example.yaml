@@ -86,14 +86,24 @@ logging:
   console: true
 
 # ====================== CHAT BACKEND ======================
-chat_backend: "simulated"                 # "simulated" | "sc2_stub"
+# "simulated"  = safe testing mode (no live SC2 interaction)
+# "sc2_stub"   = live client via keyboard + optional OCR (HIGH ToS RISK)
+# See README.md section "Enabling live SC2 chat reading + automatic AI replies"
+chat_backend: "simulated"
 
 sc2_stub:
   window_title: "StarCraft II"
   chat_key: "enter"
   send_key: "enter"
   typing_speed_cps: 11
+
+  # Set to true ONLY after you have measured chat_region and installed OCR deps
   ocr_enabled: false
   poll_interval_sec: 1.8
+
+  # Pixel region of the in-game chat box: [left, top, width, height]
+  # Example only – you must measure this on your own screen
   chat_region: null                       # e.g. [20, 650, 480, 220]
+
+  # Optional full path to tesseract if it is not in PATH
   tesseract_cmd: null
