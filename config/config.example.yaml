@@ -39,6 +39,9 @@ behaviour:
   reply_probability: 0.75
   ignore_self: true
   ignore_system: true
+  # Game-request handling ([1v1], [2v2], [host], etc.)
+  reply_to_game_requests: true
+  game_request_use_canned: true           # short canned lines; set false to always use Gemini
 
 anti_spam:
   global_cooldown_sec: 8
@@ -47,9 +50,11 @@ anti_spam:
   mute_list: []
   rate_limit_window_sec: 60
 
+# Longer memory + optional disk persistence across restarts
 memory:
-  max_messages_per_player: 12
+  max_messages_per_player: 30             # was 12; increased for better context
   max_total_context_tokens: 2500
+  persist_path: "logs/memory.json"        # set to null to disable persistence
 
 # ====================== TRIGGERS / CANNED ======================
 triggers:

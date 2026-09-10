@@ -5,7 +5,7 @@ WARNING
 -------
 This backend interacts with the live StarCraft II client via
 keyboard simulation and (optionally) screen OCR.
-Any such automation violates Blizzard’s Terms of Service and
+Any such automation violates Blizzard's Terms of Service and
 can result in account suspension or permanent ban.
 Use only for educational / research purposes and at your own risk.
 Prefer the SimulatedChatBackend for development.
@@ -174,11 +174,18 @@ class SC2StubBackend(ChatBackend):
             return ""
 
     def _parse_messages(self, raw: str) -> list[Tuple[str, str, Channel]]:
+        """Parse OCR lines into (raw_player_name, text, channel).
+
+        Accepts clan tags in the name portion, e.g.:
+          [LG]Serral: gl hf
+          [All] {TSM}ByuN: [1v1]
+        """
         results = []
         lines = [l.strip() for l in raw.splitlines() if l.strip()]
+        # Channel tag optional, then player name (may include [clan] tag), then : message
         pattern = re.compile(
             r"^(?:\[(?P<chan>All|Team|Whisper)\]\s*)?"
-            r"(?P<player>[^\s:]{2,32})\s*:\s*(?P<text>.+)$",
+            r"(?P<player>.+?)\s*:\s*(?P<text>.+)$",
             re.IGNORECASE,
         )
         for line in lines:
@@ -187,6 +194,8 @@ class SC2StubBackend(ChatBackend):
                 continue
             player = m.group("player").strip()
             text = m.group("text").strip()
+            if len(player) < 2 or len(player) > 48:
+                continue
             chan_raw = (m.group("chan") or "All").lower()
             if chan_raw == "team":
                 channel = Channel.TEAM
@@ -194,8 +203,7 @@ class SC2StubBackend(ChatBackend):
                 channel = Channel.WHISPER
             else:
                 channel = Channel.ALL
-            if player.lower() == self.self_name.lower():
-                continue
+            # Compare against self using normalized form later in from_parts
             results.append((player, text, channel))
         return results
 
@@ -219,16 +227,17 @@ class SC2StubBackend(ChatBackend):
             if fp in self._seen:
                 continue
             self._seen.append(fp)
-            new_msgs.append(
-                ChatMessage(
-                    player=player,
-                    text=text,
-                    channel=channel,
-                    timestamp=datetime.utcnow(),
-                    is_self=False,
-                    raw=raw,
-                )
+            msg = ChatMessage.from_parts(
+                player=player,
+                text=text,
+                channel=channel,
+                is_self=False,
+                raw=raw,
             )
+            # Skip our own messages (compare normalized names)
+            if msg.player.lower() == self.self_name.lower():
+                continue
+            new_msgs.append(msg)
         return new_msgs
 
     async def listen(self) -> AsyncIterator[ChatMessage]:

@@ -40,7 +40,12 @@ class SC2ChatBot:
             max_tokens=self.config.gemini.max_output_tokens,
         )
         self.triggers = TriggerEngine(self.config.triggers, self.config.canned_blocks)
-        self.memory = ConversationMemory(self.config.memory.get("max_messages_per_player", 12))
+
+        mem_cfg = self.config.memory or {}
+        self.memory = ConversationMemory(
+            max_per_player=int(mem_cfg.get("max_messages_per_player", 30)),
+            persist_path=mem_cfg.get("persist_path"),  # e.g. "logs/memory.json"
+        )
         self.anti_spam = AntiSpam(self.config.anti_spam)
 
         self.commands = CommandHandler(
@@ -73,7 +78,6 @@ class SC2ChatBot:
         self.config = Config.load(self.config_path)
         self.triggers = TriggerEngine(self.config.triggers, self.config.canned_blocks)
 
-        # Keep personality state in sync with newly loaded values
         self.personality_state["aggressiveness"] = self.config.personality.aggressiveness
         self.personality_state["political_mode"] = self.config.personality.political_mode
         self.personality_state["response_length"] = self.config.personality.response_length

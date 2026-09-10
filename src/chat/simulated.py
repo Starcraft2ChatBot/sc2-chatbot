@@ -34,17 +34,16 @@ class SimulatedChatBackend(ChatBackend):
                 continue
 
     async def send(self, text: str, channel: Channel = Channel.ALL, target: Optional[str] = None) -> None:
-        msg = ChatMessage(
+        msg = ChatMessage.from_parts(
             player=self.self_name,
             text=text,
             channel=channel,
             is_self=True,
-            timestamp=datetime.utcnow(),
         )
         print(f">>> BOT [{channel.value}] {text}")
         await self._queue.put(msg)
 
     def inject(self, player: str, text: str, channel: Channel = Channel.ALL) -> None:
-        """Helper for tests / interactive demos."""
-        msg = ChatMessage(player=player, text=text, channel=channel)
+        """Helper for tests / interactive demos. Applies clan-tag + game-request detection."""
+        msg = ChatMessage.from_parts(player=player, text=text, channel=channel)
         self._queue.put_nowait(msg)

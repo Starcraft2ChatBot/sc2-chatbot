@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Deque, Dict, List, Optional
 
-from ..models import ChatMessage, Channel
+from .models import ChatMessage, Channel
 from .names import memory_key
 
 logger = logging.getLogger("sc2_chatbot.memory")
@@ -32,7 +32,7 @@ class ConversationMemory:
         key = memory_key(msg.player)
         self._store[key].append(msg)
         if self.persist_path:
-            self._save_player(key)
+            self._save_all()
 
     def get_context(self, player: str) -> List[ChatMessage]:
         return list(self._store[memory_key(player)])
@@ -40,15 +40,12 @@ class ConversationMemory:
     def clear_player(self, player: str) -> None:
         key = memory_key(player)
         self._store.pop(key, None)
-        if self.persist_path and self.persist_path.exists():
+        if self.persist_path:
             self._save_all()
 
     def known_players(self) -> List[str]:
         return sorted(self._store.keys())
 
-    # ------------------------------------------------------------------
-    # Persistence (optional)
-    # ------------------------------------------------------------------
     def _load(self) -> None:
         if not self.persist_path or not self.persist_path.exists():
             return
@@ -74,13 +71,13 @@ class ConversationMemory:
                         continue
                 if dq:
                     self._store[key] = dq
-            logger.info("Loaded conversation memory for %d players from %s", len(self._store), self.persist_path)
+            logger.info(
+                "Loaded conversation memory for %d players from %s",
+                len(self._store),
+                self.persist_path,
+            )
         except Exception:
             logger.exception("Failed to load memory from %s", self.persist_path)
-
-    def _save_player(self, key: str) -> None:
-        # Simple approach: rewrite the whole file (small data)
-        self._save_all()
 
     def _save_all(self) -> None:
         if not self.persist_path:
@@ -102,6 +99,8 @@ class ConversationMemory:
                     }
                     for m in dq
                 ]
-            self.persist_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+            self.persist_path.write_text(
+                json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
         except Exception:
             logger.exception("Failed to save memory to %s", self.persist_path)
