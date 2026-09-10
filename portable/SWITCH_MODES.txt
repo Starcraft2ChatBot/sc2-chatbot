@@ -1,0 +1,35 @@
+Switching between Simulated and OCR (same portable folder)
+==========================================================
+
+Edit:  config/config.yaml
+Then:  fully quit and restart SC2ChatBot.exe
+
+----------------------------------------------------------------
+A) SIMULATED mode (safe — no live SC2)
+----------------------------------------------------------------
+chat_backend: "simulated"
+
+- No OCR, no keystrokes into the game
+- Good for testing personality, triggers, Gemini
+
+----------------------------------------------------------------
+B) FULL OCR + keyboard mode (live SC2 — high ToS risk)
+----------------------------------------------------------------
+chat_backend: "sc2_stub"
+
+sc2_stub:
+  ocr_enabled: true
+  chat_region: [left, top, width, height]   # from measure tool
+  # tesseract_cmd: "C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
+
+Steps:
+1. Install Tesseract OCR on your system
+2. Run:  python tools/measure_chat_region.py
+   (from a machine that has Python + pyautogui, or use any coordinate tool)
+3. Paste chat_region into config.yaml
+4. Set chat_backend to "sc2_stub" and ocr_enabled: true
+5. Start SC2 windowed, show lobby chat (usually bottom-right)
+6. Start SC2ChatBot.exe
+
+You can switch back to simulated anytime by setting:
+  chat_backend: "simulated"

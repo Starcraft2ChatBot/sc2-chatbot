@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import random
 import logging
+from pathlib import Path
 
 from .config_loader import Config
 from .logger import setup_logger
@@ -15,15 +16,21 @@ from .anti_spam import AntiSpam
 from .commands import CommandHandler
 from .decision_engine import DecisionEngine
 from .models import ChatMessage, Channel
+from .paths import resolve_path
 
 logger = logging.getLogger("sc2_chatbot")
 
 
 class SC2ChatBot:
     def __init__(self, config_path: str = "config/config.yaml"):
-        self.config_path = config_path
-        self.config = Config.load(config_path)
-        self.logger = setup_logger(self.config.logging)
+        self.config_path = str(config_path)
+        self.config = Config.load(self.config_path)
+
+        # Make log + memory paths absolute under the portable/app root when relative
+        log_cfg = dict(self.config.logging or {})
+        if log_cfg.get("file"):
+            log_cfg["file"] = str(resolve_path(log_cfg["file"]))
+        self.logger = setup_logger(log_cfg)
 
         self.personality_state = {
             "aggressiveness": self.config.personality.aggressiveness,
@@ -41,10 +48,14 @@ class SC2ChatBot:
         )
         self.triggers = TriggerEngine(self.config.triggers, self.config.canned_blocks)
 
-        mem_cfg = self.config.memory or {}
+        mem_cfg = dict(self.config.memory or {})
+        persist = mem_cfg.get("persist_path")
+        if persist:
+            persist = str(resolve_path(persist))
+
         self.memory = ConversationMemory(
             max_per_player=int(mem_cfg.get("max_messages_per_player", 30)),
-            persist_path=mem_cfg.get("persist_path"),  # e.g. "logs/memory.json"
+            persist_path=persist,
         )
         self.anti_spam = AntiSpam(self.config.anti_spam)
 

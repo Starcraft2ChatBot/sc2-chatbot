@@ -13,6 +13,7 @@ A modular, production-oriented StarCraft 2 **chat-only** bot that:
 - **Detects game requests** such as `[1v1]`, `[2v2]`, `[host]`, `[lfg]`
 - Includes anti-spam, mute list, rate limiting and owner-only commands
 - Uses realistic human-like delays and occasional typos
+- Can be shipped as a **portable folder** (one build supports **both** Simulated and OCR modes via config)
 
 ## ⚠️ Blizzard Terms of Service Warning
 
@@ -24,35 +25,26 @@ Any software that automatically reads chat from or injects keystrokes into the l
 
 ## How the bot works (automatic replies)
 
-The full pipeline is already implemented and automatic:
-
 1. A **Chat Backend** continuously yields new messages.
 2. Names are normalized (clan tags stripped); game-request patterns are flagged.
-3. The **Decision Engine** checks anti-spam rules, reply probability, triggers, game-request handling, and conversation memory.
-4. If no canned trigger / game-request reply matches, it builds a system prompt from the current personality settings and calls **Google Gemini**.
-5. The reply is sent back through the same backend after a human-like delay (with optional minor typos).
+3. The **Decision Engine** checks anti-spam, triggers, game-request handling, and memory.
+4. If needed, it calls **Google Gemini** with the current personality settings.
+5. The reply is sent after a human-like delay (optional typos).
 
-So once messages are successfully fed into the bot, it **will automatically respond with AI-generated replies** according to your personality, aggressiveness, political mode, etc.
-
-### Two backends are included
+### Two backends (same program / same portable build)
 
 | Backend       | Reads live SC2 chat? | Sends replies? | Recommended for          |
 |---------------|----------------------|----------------|--------------------------|
-| `simulated`   | No (you inject messages) | Yes (prints)  | Development & testing   |
-| `sc2_stub`    | Yes (via OCR)        | Yes (keyboard) | Live client (high risk) |
+| `simulated`   | No                   | Yes (console)  | Development & testing   |
+| `sc2_stub`    | Yes (OCR)            | Yes (keyboard) | Live client (high risk) |
 
-The **completed SC2 stub** (`src/chat/sc2_stub.py`) includes:
-- Robust window focusing + human-like keyboard typing for sending
-- Optional screen OCR reader (mss + pytesseract) for reading the on-screen chat box
-- Message parsing (including clan-tagged names), deduplication, and basic channel detection
+Switch only by editing `config/config.yaml` → `chat_backend`, then restart.
 
-**Note on chat position:** OCR does **not** auto-detect lobby vs in-game layout. You set one `chat_region` rectangle. Lobby / menu chat is usually **bottom-right**; in-game chat is often bottom-left. Use the helper script below to measure your region.
+**Chat position:** OCR uses one `chat_region` rectangle. Lobby chat is usually **bottom-right**. Measure with `tools/measure_chat_region.py`.
 
 ---
 
-## Quick Start (Simulated mode – recommended)
-
-This is the safe way to test personality, triggers, and Gemini replies.
+## Quick Start (from source)
 
 ```bash
 python -m venv .venv
@@ -61,125 +53,120 @@ pip install -r requirements.txt
 python main.py
 ```
 
-On the first run the bot automatically creates `config/config.yaml` from the example if it is missing.  
-Edit that file and put your Gemini API key (or set the `GEMINI_API_KEY` environment variable) and run again.
+Edit `config/config.yaml` and set your Gemini API key (or `GEMINI_API_KEY`).
 
 ---
 
-## Enabling live SC2 chat reading + automatic AI replies
+## Portable folder (Simulated + OCR in one package)
 
-To make the bot **read real chat and automatically respond with Gemini** (high ToS risk):
+Users can run a self-contained folder **without installing Python**. One build includes **both** modes; users switch by editing config.
 
-### 1. Install extra dependencies
+### Build the portable folder (developer machine)
+
+**Windows:**
+```bat
+scripts\build_portable.bat
+```
+
+**Linux / macOS:**
+```bash
+chmod +x scripts/build_portable.sh
+./scripts/build_portable.sh
+```
+
+Output:
+
+```text
+dist/SC2ChatBot/
+├── SC2ChatBot.exe          # or SC2ChatBot on Unix
+├── config/
+│   ├── config.yaml         # users edit this
+│   └── config.example.yaml
+├── tools/
+│   └── measure_chat_region.py
+├── README_PORTABLE.txt
+└── SWITCH_MODES.txt
+```
+
+Zip and share `dist/SC2ChatBot/`. Paths are resolved next to the executable so config/logs work after moving the folder.
+
+### End-user: Simulated mode
+
+1. Open `config/config.yaml`
+2. Set `gemini.api_key`
+3. Keep `chat_backend: "simulated"`
+4. Run `SC2ChatBot.exe`
+
+### End-user: OCR mode (same folder)
+
+1. Install [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) on the PC
+2. Measure chat box → set `sc2_stub.chat_region`
+3. Set:
+   ```yaml
+   chat_backend: "sc2_stub"
+   sc2_stub:
+     ocr_enabled: true
+     chat_region: [left, top, width, height]
+   ```
+4. Restart the exe with SC2 visible (windowed)
+
+See `portable/SWITCH_MODES.txt` (copied into the dist folder).
+
+**Note:** OCR still depends on system Tesseract unless you separately bundle it. Keyboard/OCR access is OS-dependent.
+
+---
+
+## Enabling live SC2 chat (from source)
+
 ```bash
 pip install mss Pillow pytesseract pyautogui PyGetWindow
-```
-Also install the [Tesseract OCR binary](https://github.com/tesseract-ocr/tesseract) on your system.
-
-### 2. Measure the chat box (`chat_region`)
-
-Lobby / out-of-game chat is typically in the **bottom-right**. Measure it with the included helper:
-
-```bash
 python tools/measure_chat_region.py
 ```
 
-1. Run SC2 in **Windowed** or **Windowed Fullscreen** with chat visible.
-2. Move the mouse to the **top-left** corner of the chat box → press Enter.
-3. Move the mouse to the **bottom-right** corner → press Enter.
-4. Copy the printed line into config, for example:
+Then in `config/config.yaml`:
 
 ```yaml
-chat_region: [1420, 680, 480, 300]
-```
-
-### 3. Edit `config/config.yaml`
-
-```yaml
-chat_backend: "sc2_stub"          # switch from "simulated"
-
+chat_backend: "sc2_stub"
 sc2_stub:
-  window_title: "StarCraft II"
-  chat_key: "enter"
-  send_key: "enter"
-  typing_speed_cps: 11
-
   ocr_enabled: true
-  poll_interval_sec: 1.8
-
-  # From tools/measure_chat_region.py — lobby chat is usually bottom-right
-  chat_region: [1420, 680, 480, 300]   # ← your values
-
-  # Optional: full path to tesseract if not in PATH
-  # tesseract_cmd: "C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
+  chat_region: [1420, 680, 480, 300]   # your values
 ```
 
-### 4. Important OCR requirements
-- Run StarCraft II in **Windowed** or **Windowed Fullscreen** (exclusive fullscreen usually fails).
-- The chat box must be visible on screen.
-- One fixed `chat_region` cannot cover both lobby (bottom-right) and in-game (often bottom-left) at once — re-measure if you switch screens.
-- OCR quality depends on resolution, UI scale, font, and background. It is never 100% accurate.
-
-### 5. Run the bot
-```bash
-python main.py
-```
-
-Once messages appear in the configured screen region, the bot processes them through the full decision engine and replies with Gemini (or a canned / game-request reply if one matches).
+Run SC2 in Windowed / Windowed Fullscreen. Lobby chat is typically bottom-right.
 
 ---
 
 ## Player names, game requests & memory
 
-### Clan-tag stripping
-Names like `[LG]Serral`, `{TSM}ByuN`, or `<Liquid>Clem` are normalized for memory, mute, and owner checks. The original display name is kept when useful for prompts.
-
-### Game-request detection
-Messages that look like lobby / game invites are flagged, including:
-- Bracket forms: `[1v1]`, `[2v2 me]`, `[host]`, `[lfg]`, `[zerg only]`, …
-- Loose forms: `wanna 1v1`, `looking for game`, `hosting 2v2`, …
-
-By default the bot can answer these with short natural lines (`gl hf`, `inv me`, …). Configure under `behaviour`:
+- **Clan tags** stripped for memory/mute/owner keys; display name kept when useful
+- **Game requests** (`[1v1]`, `[host]`, LFG text, …) can use short canned replies
+- **Memory:** up to 30 messages/player; optional `persist_path: "logs/memory.json"`
 
 ```yaml
 behaviour:
   reply_to_game_requests: true
-  game_request_use_canned: true   # false = always use Gemini for these
+  game_request_use_canned: true
 ```
-
-### Longer / persistent memory
-```yaml
-memory:
-  max_messages_per_player: 30
-  persist_path: "logs/memory.json"   # set null to disable disk persistence
-```
-
-Conversation history is stored **per player** (incoming + bot replies) so Gemini gets coherent context. With `persist_path` set, memory survives restarts.
 
 ---
 
 ## Obtaining a Gemini API Key
 
-1. Go to https://aistudio.google.com/
+1. https://aistudio.google.com/
 2. Create an API key
-3. Restrict it if possible
+3. Put it in `config/config.yaml` or set `GEMINI_API_KEY`
 
 ---
 
 ## Configuration overview
 
-All settings live in `config/config.yaml` (and `config/config.example.yaml`).
+All settings: `config/config.yaml`
 
-Key sections:
-- `personality` – aggressiveness, political mode, length, emoji intensity, topic biases
-- `triggers` / `canned_blocks` – regex or phrase → fixed reply (takes priority over Gemini)
-- `anti_spam` – cooldowns, mute list, rate limits
-- `behaviour` – reply probability, delay range, typo chance, game-request handling
-- `memory` – history length + optional persistence path
-- `owner` – names that can use `!tone`, `!prop`, `!mute`, `!reload`, `!status`, etc.
-- `chat_backend` / `sc2_stub` – simulated vs live OCR + keyboard
+- `personality`, `triggers`, `canned_blocks`, `anti_spam`, `behaviour`, `memory`, `owner`
+- `chat_backend`: `simulated` | `sc2_stub`
+- `sc2_stub`: OCR region, keys, Tesseract path
 
-Owner commands work in any channel when sent by a name listed under `owner.names` (clan tags optional; names are normalized).
+Owner commands: `!tone`, `!prop`, `!mute`, `!reload`, `!status`, `!length`, …
 
 ---
 
@@ -188,37 +175,16 @@ Owner commands work in any channel when sent by a name listed under `owner.names
 ```
 sc2_chatbot/
 ├── config/
-│   ├── config.yaml
-│   └── config.example.yaml
-├── tools/
-│   └── measure_chat_region.py   # mouse helper for chat_region
+├── portable/                 # texts shipped inside dist/
+├── scripts/build_portable.*  # build the portable folder
+├── tools/measure_chat_region.py
+├── SC2ChatBot.spec           # PyInstaller
 ├── src/
-│   ├── chat/                    # abstract backend + simulated + SC2 stub
-│   ├── names.py                 # clan-tag stripping / memory keys
-│   ├── game_requests.py         # [1v1] / LFG detection
-│   ├── models.py
-│   ├── config_loader.py
-│   ├── logger.py
-│   ├── gemini_client.py
-│   ├── personality.py
-│   ├── triggers.py
-│   ├── memory.py                # longer + optional persistent memory
-│   ├── anti_spam.py
-│   ├── commands.py
-│   ├── decision_engine.py
-│   └── bot.py
+│   ├── paths.py              # portable/frozen path helpers
+│   ├── chat/
+│   └── …
 └── main.py
 ```
-
-The design is modular: swap the backend and the rest of the AI / personality / anti-spam stack continues to work unchanged.
-
----
-
-## Extending further
-
-You can implement your own `ChatBackend` subclass if you prefer a different reading method (memory reading, log tailing, etc.). Just implement `connect`, `disconnect`, `listen`, `send`, and `is_connected`.
-
-Memory-reading approaches exist in the community but carry even higher detection risk and are outside the scope of this repository.
 
 ---
 
