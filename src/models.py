@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from .names import normalize_player_name, strip_clan_tag
+from .names import normalize_player_name
 from .game_requests import detect_game_request, GameRequestInfo
 
 
@@ -23,14 +23,15 @@ class ChatMessage:
     timestamp: datetime = field(default_factory=datetime.utcnow)
     is_self: bool = False
     raw: Optional[str] = None
-    # Optional enrichment (filled by from_raw / parsers)
+    # Optional enrichment (filled by from_parts)
     display_name: Optional[str] = None          # original name including clan tag
     is_game_request: bool = False
     game_request_kind: str = ""
 
     def __str__(self) -> str:
         tag = " [game-req]" if self.is_game_request else ""
-        return f"[{self.timestamp:%H:%M:%S}] [{self.channel.value}] {self.player}: {self.text}{tag}"
+        shown = self.display_name or self.player
+        return f"[{self.timestamp:%H:%M:%S}] [{self.channel.value}] {shown}: {self.text}{tag}"
 
     @staticmethod
     def from_parts(
@@ -43,9 +44,9 @@ class ChatMessage:
         timestamp: Optional[datetime] = None,
     ) -> "ChatMessage":
         """Build a ChatMessage with clan-tag stripping and game-request detection."""
-        display = player.strip()
+        display = (player or "").strip()
         normalized = normalize_player_name(display)
-        info: GameRequestInfo = detect_game_request(text)
+        info: GameRequestInfo = detect_game_request(text or "")
         return ChatMessage(
             player=normalized or display,
             text=text,

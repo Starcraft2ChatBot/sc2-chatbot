@@ -1,8 +1,10 @@
 from __future__ import annotations
 import logging
 from typing import Callable, Optional
-from ..models import ChatMessage
-from ..config_loader import Config
+
+from .models import ChatMessage
+from .config_loader import Config
+from .names import memory_key, normalize_player_name
 
 logger = logging.getLogger("sc2_chatbot.commands")
 
@@ -14,10 +16,11 @@ class CommandHandler:
         self.anti_spam = anti_spam
         self.state = personality_state
         self.prefix = config.owner.get("command_prefix", "!")
-        self.owners = {n.lower() for n in config.owner.get("names", [])}
+        # Owner names normalized the same way as chat names (clan tags stripped)
+        self.owners = {memory_key(n) for n in config.owner.get("names", [])}
 
     def is_owner(self, player: str) -> bool:
-        return player.lower() in self.owners
+        return memory_key(player) in self.owners
 
     def handle(self, msg: ChatMessage) -> Optional[str]:
         if not self.is_owner(msg.player):
@@ -49,13 +52,13 @@ class CommandHandler:
         if cmd == "mute":
             if arg:
                 self.anti_spam.mute_player(arg)
-                return f"Muted {arg}"
+                return f"Muted {normalize_player_name(arg) or arg}"
             return "Usage: !mute PlayerName"
 
         if cmd == "unmute":
             if arg:
                 self.anti_spam.unmute_player(arg)
-                return f"Unmuted {arg}"
+                return f"Unmuted {normalize_player_name(arg) or arg}"
             return "Usage: !unmute PlayerName"
 
         if cmd == "reload":

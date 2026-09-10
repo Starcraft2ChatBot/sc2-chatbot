@@ -3,7 +3,8 @@ import re
 import time
 from dataclasses import dataclass, field
 from typing import List, Optional, Pattern
-from ..models import ChatMessage
+
+from .models import ChatMessage
 
 
 @dataclass

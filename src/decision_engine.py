@@ -2,8 +2,8 @@ from __future__ import annotations
 import random
 import logging
 from typing import Optional
-from datetime import datetime
-from ..models import ChatMessage, Channel
+
+from .models import ChatMessage, Channel
 from .gemini_client import GeminiClient
 from .personality import build_system_prompt
 from .triggers import TriggerEngine
@@ -52,6 +52,21 @@ class DecisionEngine:
             return False
         return self.anti_spam.can_reply(msg)
 
+    def _store_exchange(self, incoming: ChatMessage, reply: str) -> None:
+        """Store both sides of the exchange under the human player's memory key."""
+        self.memory.add(incoming)
+        # Keep the bot reply under the *same* player key so get_context() returns
+        # a coherent dialogue (is_self distinguishes the two sides).
+        self.memory.add(
+            ChatMessage(
+                player=incoming.player,
+                text=reply,
+                channel=incoming.channel,
+                is_self=True,
+                display_name=incoming.display_name,
+            )
+        )
+
     def decide_and_generate(self, msg: ChatMessage) -> Optional[str]:
         if not self.should_consider(msg):
             return None
@@ -60,22 +75,16 @@ class DecisionEngine:
         canned = self.triggers.check(msg, self.state["aggressiveness"])
         if canned:
             self.anti_spam.record_reply(msg.player)
-            self.memory.add(msg)
+            self._store_exchange(msg, canned)
             return canned
 
-        # 2. Game-request awareness (optional short reply or extra context for Gemini)
+        # 2. Game-request awareness (optional short reply)
         if msg.is_game_request and self.behaviour.get("reply_to_game_requests", True):
-            # Prefer a short natural line; still allow Gemini if desired
             if self.behaviour.get("game_request_use_canned", True):
                 pool = GAME_REQUEST_REPLIES.get(msg.game_request_kind) or GAME_REQUEST_REPLIES["other"]
                 reply = random.choice(pool)
                 self.anti_spam.record_reply(msg.player)
-                self.memory.add(msg)
-                self.memory.add(
-                    ChatMessage.from_parts(
-                        player="BOT", text=reply, channel=msg.channel, is_self=True
-                    )
-                )
+                self._store_exchange(msg, reply)
                 return reply
 
         # 3. Gemini with conversation history
@@ -88,7 +97,6 @@ class DecisionEngine:
             channel=msg.channel.value,
         )
 
-        # Extra hint when it's a game request but we fell through to Gemini
         extra = ""
         if msg.is_game_request:
             extra = (
@@ -114,12 +122,7 @@ class DecisionEngine:
             reply = self._introduce_typo(reply)
 
         self.anti_spam.record_reply(msg.player)
-        self.memory.add(msg)
-        self.memory.add(
-            ChatMessage.from_parts(
-                player="BOT", text=reply, channel=msg.channel, is_self=True
-            )
-        )
+        self._store_exchange(msg, reply)
         return reply
 
     @staticmethod

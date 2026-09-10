@@ -2,25 +2,23 @@
 from __future__ import annotations
 import re
 from dataclasses import dataclass
-from typing import Optional
 
 # Common patterns players use when looking for a game:
 #   [1v1]  [2v2]  [3v3]  [4v4]
 #   [1v1 me]  [2v2 any]  [zerg only]
 #   [host]  [hosting]  [lfg]  [looking for game]
-#   bare brackets with race / map hints
 
 _BRACKET_RE = re.compile(
     r"""
     \[\s*
     (?P<body>
-        (?:\d\s*v\s*\d)                  # 1v1, 2v2, ...
-        | (?:host(?:ing)?)               # host / hosting
-        | (?:lfg|looking\s*for\s*game)   # lfg
-        | (?:anyone|any)\s*(?:up|for)?   # anyone up
-        | (?:zerg|protoss|terran|random) # race
-        | (?:me|us|open|spot)            # me / open spot
-        | [^\]]{0,40}                    # short free-form inside brackets
+        (?:\d\s*v\s*\d)                     # 1v1, 2v2, ...
+        | (?:host(?:ing)?)                  # host / hosting
+        | (?:lfg|looking\s*for\s*game)      # lfg
+        | (?:anyone|any)\s*(?:up|for)?      # anyone up
+        | (?:zerg|protoss|terran|random)    # race
+        | (?:me|us|open|spot)               # me / open spot
+        | [^\]]{1,40}                       # other short bracketed lobby text
     )
     \s*\]
     """,
@@ -33,8 +31,7 @@ _LOOSE_REQUEST_RE = re.compile(
     r"wanna\s*(?:play|game|1v1|2v2)|"
     r"looking\s*for\s*(?:game|1v1|2v2|team)|"
     r"hosting\s*(?:1v1|2v2|3v3|4v4|game)?|"
-    r"lf\s*(?:1v1|2v2|game|team)|"
-    r"glhf\s*\+\s*game"
+    r"lf\s*(?:1v1|2v2|game|team)"
     r")\b"
 )
 
@@ -54,8 +51,9 @@ def detect_game_request(text: str) -> GameRequestInfo:
     m = _BRACKET_RE.search(text)
     if m:
         body = (m.group("body") or "").strip()
-        kind = _classify_body(body)
-        return GameRequestInfo(True, kind=kind, raw_body=body)
+        if body:
+            kind = _classify_body(body)
+            return GameRequestInfo(True, kind=kind, raw_body=body)
 
     if _LOOSE_REQUEST_RE.search(text):
         return GameRequestInfo(True, kind="other", raw_body=text.strip())
