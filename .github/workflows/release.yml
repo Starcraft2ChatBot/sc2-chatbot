@@ -1,0 +1,103 @@
+name: Release portable package
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag name to create (e.g. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assemble portable folder
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME:-${{ github.event.inputs.tag }}}"
+          NAME="SC2ChatBot-portable-${VER}"
+          mkdir -p "$NAME"/{config,tools,scripts,portable,src/chat}
+          cp -a src/*.py "$NAME/src/"
+          cp -a src/chat/*.py "$NAME/src/chat/"
+          cp main.py requirements.txt LICENSE README.md SC2ChatBot.spec "$NAME/"
+          cp config/config.yaml config/config.example.yaml "$NAME/config/"
+          cp tools/measure_chat_region.py "$NAME/tools/"
+          cp scripts/* "$NAME/scripts/" || true
+          cp portable/* "$NAME/portable/" || true
+
+          cat > "$NAME/RUN_SIMULATED.bat" << 'EOF'
+          @echo off
+          cd /d "%~dp0"
+          if not exist .venv (
+            python -m venv .venv
+            call .venv\Scripts\activate.bat
+            python -m pip install -r requirements.txt
+          ) else (
+            call .venv\Scripts\activate.bat
+          )
+          python -c "from pathlib import Path; import re; p=Path('config/config.yaml'); t=p.read_text(encoding='utf-8'); t=re.sub(r'(?m)^chat_backend:.*', 'chat_backend: \"simulated\"', t); p.write_text(t, encoding='utf-8')"
+          python main.py
+          pause
+          EOF
+
+          cat > "$NAME/RUN_OCR.bat" << 'EOF'
+          @echo off
+          cd /d "%~dp0"
+          echo OCR mode - ToS risk. Needs Tesseract + chat_region.
+          if not exist .venv (
+            python -m venv .venv
+            call .venv\Scripts\activate.bat
+            python -m pip install -r requirements.txt
+          ) else (
+            call .venv\Scripts\activate.bat
+          )
+          python -c "from pathlib import Path; import re; p=Path('config/config.yaml'); t=p.read_text(encoding='utf-8'); t=re.sub(r'(?m)^chat_backend:.*', 'chat_backend: \"sc2_stub\"', t); p.write_text(t, encoding='utf-8')"
+          python main.py
+          pause
+          EOF
+
+          cat > "$NAME/RELEASE_NOTES.txt" << EOF
+          SC2 ChatBot portable ${VER}
+          Both modes in one package: Simulated + OCR (sc2_stub).
+          Use RUN_SIMULATED.bat / RUN_OCR.bat or edit config/config.yaml chat_backend.
+          EOF
+
+          zip -r "${NAME}.zip" "$NAME"
+          echo "ASSET=${NAME}.zip" >> "$GITHUB_ENV"
+          ls -lh "${NAME}.zip"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || github.event.inputs.tag }}
+          name: SC2 ChatBot ${{ github.ref_type == 'tag' && github.ref_name || github.event.inputs.tag }}
+          body: |
+            **Portable package — Simulated + OCR in one zip**
+
+            | Mode | How |
+            |------|-----|
+            | Simulated (safe) | `RUN_SIMULATED.bat` or set `chat_backend: "simulated"` |
+            | OCR / live (ToS risk) | `RUN_OCR.bat` or set `chat_backend: "sc2_stub"` + measure `chat_region` |
+
+            1. Unzip
+            2. Put Gemini API key in `config/config.yaml`
+            3. Run the launcher for your mode
+
+            OCR still needs **Tesseract** installed on the PC.
+
+            ⚠️ Live SC2 automation may violate Blizzard Terms of Service.
+          files: |
+            SC2ChatBot-portable-*.zip
+          draft: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
