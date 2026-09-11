@@ -2,7 +2,6 @@ from __future__ import annotations
 import asyncio
 import random
 import logging
-from pathlib import Path
 
 from .config_loader import Config
 from .logger import setup_logger
@@ -17,6 +16,7 @@ from .commands import CommandHandler
 from .decision_engine import DecisionEngine
 from .models import ChatMessage, Channel
 from .paths import resolve_path
+from .diagnostics import run_startup_diagnostics
 
 logger = logging.getLogger("sc2_chatbot")
 
@@ -31,6 +31,12 @@ class SC2ChatBot:
         if log_cfg.get("file"):
             log_cfg["file"] = str(resolve_path(log_cfg["file"]))
         self.logger = setup_logger(log_cfg)
+
+        # Console health report (Gemini, deps, OCR region, Tesseract, …)
+        try:
+            run_startup_diagnostics(self.config)
+        except Exception:
+            self.logger.exception("Diagnostics failed (continuing startup)")
 
         self.personality_state = {
             "aggressiveness": self.config.personality.aggressiveness,

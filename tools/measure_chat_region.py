@@ -25,6 +25,7 @@ try:
     import pyautogui
 except ImportError:
     print("pyautogui is required. Install with:  pip install pyautogui")
+    input("\nPress Enter to close…")
     sys.exit(1)
 
 
@@ -50,6 +51,7 @@ def capture_point(label: str) -> tuple[int, int]:
     except (KeyboardInterrupt, EOFError):
         stop.set()
         print("\nCancelled.")
+        input("\nPress Enter to close…")
         sys.exit(0)
     stop.set()
     t.join(timeout=0.5)
@@ -66,6 +68,9 @@ def main() -> None:
     print("Make sure StarCraft II is visible (Windowed / Windowed Fullscreen).")
     print("Lobby / menu chat is usually in the BOTTOM-RIGHT of the screen.")
     print()
+    print("IMPORTANT: result is [left, top, WIDTH, HEIGHT]")
+    print("  (not left/top/right/bottom)")
+    print()
     print("You will capture TWO corners of the chat box:")
     print("  1) TOP-LEFT")
     print("  2) BOTTOM-RIGHT")
@@ -74,6 +79,7 @@ def main() -> None:
         input("Press Enter when you are ready to start…")
     except (KeyboardInterrupt, EOFError):
         print("\nCancelled.")
+        input("\nPress Enter to close…")
         sys.exit(0)
 
     x1, y1 = capture_point("TOP-LEFT corner")
@@ -99,7 +105,17 @@ def main() -> None:
     print('  ocr_enabled: true')
     print('  chat_backend: "sc2_stub"')
     print()
+    print("Window will stay open so you can copy the numbers.")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        print(f"\nError: {e}")
+    finally:
+        # Keep the window open (double-click / RUN from explorer)
+        try:
+            input("\nPress Enter to close…")
+        except (KeyboardInterrupt, EOFError):
+            pass

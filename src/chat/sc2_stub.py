@@ -19,7 +19,6 @@ import random
 import re
 import time
 from collections import deque
-from datetime import datetime
 from typing import AsyncIterator, Deque, Optional, Tuple
 
 from ..models import ChatMessage, Channel
@@ -66,9 +65,12 @@ class SC2StubBackend(ChatBackend):
         self.poll_interval = float(self.cfg.get("poll_interval_sec", 1.8))
         self.chat_region = self.cfg.get("chat_region")
         self.tesseract_cmd = self.cfg.get("tesseract_cmd")
+        # Log a short OCR sample every N polls when no messages parse (troubleshooting)
+        self._debug_every = int(self.cfg.get("ocr_debug_every_n_polls", 8))
+        self._poll_count = 0
 
         self._connected = False
-        self._seen: Deque[str] = deque(maxlen=80)
+        self._seen: Deque[str] = deque(maxlen=120)
         self._last_ocr_text = ""
         self._lock = asyncio.Lock()
 
@@ -87,10 +89,24 @@ class SC2StubBackend(ChatBackend):
             elif not self.chat_region:
                 logger.warning("OCR enabled but chat_region not set.")
                 self.ocr_enabled = False
+            else:
+                try:
+                    _l, _t, w, h = [int(x) for x in self.chat_region]
+                    if w > 1200 or h > 900:
+                        logger.warning(
+                            "chat_region width/height looks very large (%sx%s). "
+                            "Format must be [left, top, width, height] — not right/bottom.",
+                            w,
+                            h,
+                        )
+                except Exception:
+                    logger.warning("chat_region is not a valid [left, top, width, height] list")
 
     async def connect(self) -> None:
         self._connected = True
         logger.info("SC2StubBackend connected (OCR=%s)", self.ocr_enabled)
+        if self.ocr_enabled and self.chat_region:
+            logger.info("OCR chat_region=%s  poll=%.1fs", self.chat_region, self.poll_interval)
 
     async def disconnect(self) -> None:
         self._connected = False
@@ -152,14 +168,14 @@ class SC2StubBackend(ChatBackend):
     def _capture_chat_region(self):
         if not (HAS_MSS and self.chat_region):
             return None
-        left, top, width, height = self.chat_region
+        left, top, width, height = [int(x) for x in self.chat_region]
         monitor = {"left": left, "top": top, "width": width, "height": height}
         try:
             with mss.mss() as sct:
                 shot = sct.grab(monitor)
                 return Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
         except Exception as e:
-            logger.debug("Screenshot failed: %s", e)
+            logger.warning("Screenshot failed: %s", e)
             return None
 
     def _ocr_image(self, img) -> str:
@@ -170,22 +186,26 @@ class SC2StubBackend(ChatBackend):
             text = pytesseract.image_to_string(img, lang="eng", config=config)
             return text.strip()
         except Exception as e:
-            logger.debug("OCR failed: %s", e)
+            logger.warning("OCR failed (is Tesseract installed?): %s", e)
             return ""
 
     def _parse_messages(self, raw: str) -> list[Tuple[str, str, Channel]]:
         """Parse OCR lines into (raw_player_name, text, channel).
 
-        Accepts clan tags in the name portion, e.g.:
-          [LG]Serral: gl hf
-          [All] {TSM}ByuN: [1v1]
+        Handles common SC2 lobby / arcade forms, e.g.:
+          Serral: gl hf
+          [All] Serral: gl hf
+          [1. General] antonBuffer: hello
+          16:32 [2. Arcade] Kelvin: hi
         """
         results = []
         lines = [l.strip() for l in raw.splitlines() if l.strip()]
-        # Channel tag optional, then player name (may include [clan] tag), then : message
+
+        # Optional time, optional [channel], then name: text
         pattern = re.compile(
-            r"^(?:\[(?P<chan>All|Team|Whisper)\]\s*)?"
-            r"(?P<player>.+?)\s*:\s*(?P<text>.+)$",
+            r"^(?:\d{1,2}:\d{2}\s+)?"  # optional HH:MM
+            r"(?:\[(?P<chan>[^\]]+)\]\s*)?"  # optional [All] / [1. General] / …
+            r"(?P<player>[^:]{2,48}?)\s*:\s*(?P<text>.+)$",
             re.IGNORECASE,
         )
         for line in lines:
@@ -196,14 +216,16 @@ class SC2StubBackend(ChatBackend):
             text = m.group("text").strip()
             if len(player) < 2 or len(player) > 48:
                 continue
-            chan_raw = (m.group("chan") or "All").lower()
-            if chan_raw == "team":
+            # Drop pure numeric "names" from bad OCR of timestamps
+            if player.isdigit():
+                continue
+            chan_raw = (m.group("chan") or "all").lower()
+            if "team" in chan_raw:
                 channel = Channel.TEAM
-            elif chan_raw == "whisper":
+            elif "whisper" in chan_raw:
                 channel = Channel.WHISPER
             else:
                 channel = Channel.ALL
-            # Compare against self using normalized form later in from_parts
             results.append((player, text, channel))
         return results
 
@@ -213,14 +235,29 @@ class SC2StubBackend(ChatBackend):
     async def _poll_once(self) -> list[ChatMessage]:
         if not self.ocr_enabled:
             return []
+        self._poll_count += 1
         img = self._capture_chat_region()
         if img is None:
+            if self._poll_count % self._debug_every == 1:
+                logger.warning("OCR capture returned no image — check chat_region coordinates")
             return []
         raw = self._ocr_image(img)
-        if not raw or raw == self._last_ocr_text:
+        if not raw:
+            if self._poll_count % self._debug_every == 1:
+                logger.warning(
+                    "OCR returned empty text — wrong region, or Tesseract cannot read this UI"
+                )
+            return []
+
+        if raw == self._last_ocr_text:
             return []
         self._last_ocr_text = raw
+
         parsed = self._parse_messages(raw)
+        if not parsed and self._poll_count % self._debug_every == 1:
+            sample = raw.replace("\n", " | ")[:180]
+            logger.info("OCR text seen but no lines parsed. Sample: %s", sample)
+
         new_msgs = []
         for player, text, channel in parsed:
             fp = self._fingerprint(player, text)
@@ -234,7 +271,6 @@ class SC2StubBackend(ChatBackend):
                 is_self=False,
                 raw=raw,
             )
-            # Skip our own messages (compare normalized names)
             if msg.player.lower() == self.self_name.lower():
                 continue
             new_msgs.append(msg)
@@ -244,6 +280,13 @@ class SC2StubBackend(ChatBackend):
         logger.info("SC2StubBackend listen() started (OCR=%s)", self.ocr_enabled)
         if not self.ocr_enabled:
             logger.warning("OCR reader is disabled. No messages will be yielded.")
+        else:
+            logger.info(
+                "Polling screen every %.1fs. Waiting for chat lines… "
+                "(status samples every ~%d polls if nothing parses)",
+                self.poll_interval,
+                self._debug_every,
+            )
 
         while self._connected:
             try:
