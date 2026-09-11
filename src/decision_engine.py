@@ -1,14 +1,16 @@
 from __future__ import annotations
-import random
-import logging
-import re
-from typing import Optional, Any
 
-from .models import ChatMessage, Channel
+import logging
+import random
+import re
+from typing import Any, Optional, Set
+
+from .anti_spam import AntiSpam
+from .memory import ConversationMemory
+from .models import Channel, ChatMessage
+from .names import memory_key, short_display_name
 from .personality import build_system_prompt
 from .triggers import TriggerEngine
-from .memory import ConversationMemory
-from .anti_spam import AntiSpam
 
 logger = logging.getLogger("sc2_chatbot.decision")
 
@@ -34,21 +36,41 @@ class DecisionEngine:
         anti_spam: AntiSpam,
         personality_state: dict,
         behaviour: dict,
+        self_names: Optional[Set[str]] = None,
     ):
         self.llm = llm
-        self.gemini = llm  # backwards alias
+        self.gemini = llm
         self.triggers = triggers
         self.memory = memory
         self.anti_spam = anti_spam
         self.state = personality_state
         self.behaviour = behaviour
+        self._self_keys = {memory_key(n) for n in (self_names or set()) if n}
+
+    def _is_own_player(self, msg: ChatMessage) -> bool:
+        if msg.is_self:
+            return True
+        return memory_key(msg.player) in self._self_keys
+
+    def _mentions_bot(self, msg: ChatMessage) -> bool:
+        text = (msg.text or "").lower()
+        for key in self._self_keys:
+            if key and key in text:
+                return True
+        return False
 
     def should_consider(self, msg: ChatMessage) -> bool:
-        if msg.is_self and self.behaviour.get("ignore_self", True):
+        if self.behaviour.get("ignore_self", True) and self._is_own_player(msg):
             return False
         if msg.channel == Channel.SYSTEM and self.behaviour.get("ignore_system", True):
             return False
-        if random.random() > self.behaviour.get("reply_probability", 0.85):
+
+        # Always prioritize messages that @ the bot / contain our name
+        if self._mentions_bot(msg):
+            return self.anti_spam.can_reply(msg)
+
+        prob = float(self.behaviour.get("reply_probability", 0.85))
+        if random.random() > prob:
             return False
         return self.anti_spam.can_reply(msg)
 
@@ -65,16 +87,14 @@ class DecisionEngine:
         )
 
     def _address_player(self, msg: ChatMessage, body: str) -> str:
-        """Prefix reply with the player's name so chat reads: Name, message…"""
         if not self.behaviour.get("address_by_name", True):
             return body
-        name = (msg.display_name or msg.player or "").strip()
-        # Strip clan tags for a cleaner ping: [LG]Serral -> Serral
-        name = re.sub(r"^[\[\{\<][^\]\}\>]+[\]\}\>]\s*", "", name).strip() or msg.player
+        name = short_display_name(msg.display_name or msg.player)
         body = (body or "").strip()
+        if not name:
+            return body
         if not body:
             return name
-        # Avoid "Name, Name is ..." if model already started with the name
         if re.match(re.escape(name) + r"\b", body, flags=re.IGNORECASE):
             return body
         sep = self.behaviour.get("name_separator", ", ")
@@ -84,9 +104,8 @@ class DecisionEngine:
         if not self.should_consider(msg):
             return None
 
-        label = msg.display_name or msg.player
+        label = short_display_name(msg.display_name or msg.player)
 
-        # 1. Triggers
         canned = self.triggers.check(msg, self.state["aggressiveness"])
         if canned:
             reply = self._address_player(msg, canned)
@@ -94,7 +113,6 @@ class DecisionEngine:
             self._store_exchange(msg, reply)
             return reply
 
-        # 2. Optional canned game-request replies
         if msg.is_game_request and self.behaviour.get("reply_to_game_requests", True):
             if self.behaviour.get("game_request_use_canned", False):
                 pool = GAME_REQUEST_REPLIES.get(msg.game_request_kind) or GAME_REQUEST_REPLIES["other"]
@@ -103,7 +121,6 @@ class DecisionEngine:
                 self._store_exchange(msg, reply)
                 return reply
 
-        # 3. LLM with per-player history — real conversation
         system = build_system_prompt(
             aggressiveness=self.state["aggressiveness"],
             political_mode=self.state["political_mode"],
@@ -115,10 +132,11 @@ class DecisionEngine:
         )
 
         extra = ""
+        if self._mentions_bot(msg):
+            extra += "\nThey mentioned you / your name — reply to them directly."
         if msg.is_game_request:
-            extra = (
-                f"\nNote: this looks like a game/lobby request "
-                f"(kind={msg.game_request_kind or 'other'}). Reply briefly as a player."
+            extra += (
+                f"\nThis looks like a game request (kind={msg.game_request_kind or 'other'})."
             )
 
         history_msgs = self.memory.get_context(msg.player)
@@ -128,22 +146,18 @@ class DecisionEngine:
             history.append({"role": role, "parts": [h.text]})
 
         user_prompt = (
-            f"Player '{label}' said in {msg.channel.value} chat:\n"
-            f"\"{msg.text}\"\n\n"
-            f"Write your in-character reply to THAT message only.{extra}"
+            f"Player '{label}' said:\n\"{msg.text}\"\n\n"
+            f"Reply to THAT message only as a SC2 player.{extra}"
         )
         body = self.llm.generate(system, user_prompt, history)
 
         if not body:
-            # Prefer a minimal contextual fallback over pure random spam
-            body = f"what do you mean" if "?" in (msg.text or "") else random.choice(FALLBACKS)
+            body = "what do you mean" if "?" in (msg.text or "") else random.choice(FALLBACKS)
 
         if random.random() < self.behaviour.get("typo_chance", 0.05):
             body = self._introduce_typo(body)
 
-        # Strip accidental surrounding quotes from the model
         body = body.strip().strip('"').strip("'")
-
         reply = self._address_player(msg, body)
         self.anti_spam.record_reply(msg.player)
         self._store_exchange(msg, reply)

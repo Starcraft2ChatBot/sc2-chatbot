@@ -1,9 +1,6 @@
 """
-SC2 Stub Backend
-
-WARNING: keyboard + OCR automation can violate Blizzard ToS.
+SC2 Stub Backend — OCR + keyboard (ToS risk).
 """
-
 from __future__ import annotations
 
 import asyncio
@@ -12,9 +9,10 @@ import random
 import re
 import time
 from collections import deque
-from typing import AsyncIterator, Deque, Optional, Tuple
+from typing import AsyncIterator, Deque, Iterable, Optional, Set, Tuple
 
 from ..models import ChatMessage, Channel
+from ..names import clean_ocr_player_name, memory_key, short_display_name
 from .base import ChatBackend
 
 logger = logging.getLogger("sc2_chatbot.sc2_stub")
@@ -57,26 +55,37 @@ except ImportError:
 
 
 class SC2StubBackend(ChatBackend):
-    def __init__(self, cfg: dict, self_name: str = "ChatBot"):
+    def __init__(
+        self,
+        cfg: dict,
+        self_name: str = "ChatBot",
+        self_names: Optional[Iterable[str]] = None,
+    ):
         self.cfg = cfg or {}
         self.self_name = self_name
+        # All identities to ignore (bot account + owner names from config)
+        names = {self_name}
+        if self_names:
+            names.update(n for n in self_names if n)
+        self._self_keys: Set[str] = {memory_key(n) for n in names if n}
 
         self.chat_key = self.cfg.get("chat_key", "enter")
         self.send_key = self.cfg.get("send_key", "enter")
         self.typing_cps = float(self.cfg.get("typing_speed_cps", 11))
         self.window_title_substring = self.cfg.get("window_title", "StarCraft II")
-        # paste = whole message via clipboard (avoids Enter mid-sentence). type = per-char.
         self.input_method = str(self.cfg.get("input_method", "paste")).lower()
 
         self.ocr_enabled = bool(self.cfg.get("ocr_enabled", False))
-        self.poll_interval = float(self.cfg.get("poll_interval_sec", 1.8))
+        # Faster default poll for near-realtime terminal updates
+        self.poll_interval = float(self.cfg.get("poll_interval_sec", 0.7))
         self.chat_region = self.cfg.get("chat_region")
         self.tesseract_cmd = self.cfg.get("tesseract_cmd")
-        self._debug_every = int(self.cfg.get("ocr_debug_every_n_polls", 8))
+        self._debug_every = int(self.cfg.get("ocr_debug_every_n_polls", 12))
         self._poll_count = 0
 
         self._connected = False
-        self._seen: Deque[str] = deque(maxlen=120)
+        self._seen: Deque[str] = deque(maxlen=200)
+        self._recent_sends: Deque[str] = deque(maxlen=30)
         self._last_ocr_text = ""
         self._lock = asyncio.Lock()
 
@@ -89,7 +98,7 @@ class SC2StubBackend(ChatBackend):
         if not HAS_PYAUTOGUI:
             logger.warning("pyautogui / pygetwindow not installed – sending will fail")
         if self.input_method == "paste" and not HAS_PYPERCLIP:
-            logger.warning("pyperclip not installed – falling back to slow typing")
+            logger.warning("pyperclip not installed – falling back to typing")
             self.input_method = "type"
         if self.ocr_enabled:
             if not (HAS_MSS and HAS_TESSERACT):
@@ -99,15 +108,34 @@ class SC2StubBackend(ChatBackend):
                 logger.warning("OCR enabled but chat_region not set.")
                 self.ocr_enabled = False
 
+    def _is_self(self, player: str) -> bool:
+        return memory_key(player) in self._self_keys
+
+    def _is_echo_of_own_send(self, text: str) -> bool:
+        t = (text or "").lower().strip()
+        if len(t) < 6:
+            return False
+        for sent in self._recent_sends:
+            s = sent.lower().strip()
+            if not s:
+                continue
+            if t == s or t in s or s in t:
+                return True
+            # Compare without the "Name, " prefix we add
+            if ", " in s:
+                body = s.split(", ", 1)[-1]
+                if body and (body in t or t in body):
+                    return True
+        return False
+
     async def connect(self) -> None:
         self._connected = True
         logger.info(
-            "SC2StubBackend connected (OCR=%s, input=%s)",
+            "SC2StubBackend connected (OCR=%s, input=%s, ignore=%s)",
             self.ocr_enabled,
             self.input_method,
+            sorted(self._self_keys),
         )
-        if self.ocr_enabled and self.chat_region:
-            logger.info("OCR chat_region=%s poll=%.1fs", self.chat_region, self.poll_interval)
 
     async def disconnect(self) -> None:
         self._connected = False
@@ -132,14 +160,13 @@ class SC2StubBackend(ChatBackend):
             if window.isMinimized:
                 window.restore()
             window.activate()
-            time.sleep(0.3)
+            time.sleep(0.25)
             return True
         except Exception as e:
             logger.warning("Could not focus SC2 window: %s", e)
             return False
 
     def _paste_text(self, text: str) -> None:
-        """Paste the full message in one shot (no mid-message Enter)."""
         old = None
         try:
             try:
@@ -149,7 +176,7 @@ class SC2StubBackend(ChatBackend):
             pyperclip.copy(text)
             time.sleep(0.05)
             pyautogui.hotkey("ctrl", "v")
-            time.sleep(0.12)
+            time.sleep(0.1)
         finally:
             if old is not None:
                 try:
@@ -158,22 +185,19 @@ class SC2StubBackend(ChatBackend):
                     pass
 
     def _type_text(self, text: str) -> None:
-        """Fallback character typing — never sends Enter until caller does."""
-        # Replace newlines so we cannot accidentally "send" mid-message
         safe = text.replace("\r", " ").replace("\n", " ")
         delay = 1.0 / max(self.typing_cps, 1.0)
         for char in safe:
             if char == "\t":
                 continue
             pyautogui.write(char, interval=0)
-            time.sleep(delay * random.uniform(0.7, 1.3))
+            time.sleep(delay * random.uniform(0.7, 1.2))
 
     async def send(self, text: str, channel: Channel = Channel.ALL, target: Optional[str] = None) -> None:
         if not HAS_PYAUTOGUI:
             logger.error("Cannot send – pyautogui not available")
             return
 
-        # Single-line only for SC2 chat
         text = (text or "").replace("\r", " ").replace("\n", " ").strip()
         if not text:
             return
@@ -183,25 +207,21 @@ class SC2StubBackend(ChatBackend):
             if window is None:
                 logger.error("StarCraft II window not found")
                 return
-
             if not self._focus_window(window):
                 return
 
-            await asyncio.sleep(random.uniform(0.2, 0.4))
-
-            # Open chat box (Enter). Wait long enough so SC2 does not treat the
-            # next action as a second Enter / empty send.
+            await asyncio.sleep(random.uniform(0.15, 0.3))
             pyautogui.press(self.chat_key)
-            await asyncio.sleep(random.uniform(0.35, 0.55))
+            await asyncio.sleep(random.uniform(0.35, 0.5))
 
             if self.input_method == "paste" and HAS_PYPERCLIP:
                 self._paste_text(text)
             else:
                 self._type_text(text)
 
-            # Wait until the full message is in the box, THEN send once
-            await asyncio.sleep(random.uniform(0.2, 0.35))
+            await asyncio.sleep(random.uniform(0.2, 0.3))
             pyautogui.press(self.send_key)
+            self._recent_sends.append(text)
             logger.info("Sent to %s: %s", channel.value, text[:100])
 
     def _capture_chat_region(self):
@@ -221,42 +241,48 @@ class SC2StubBackend(ChatBackend):
         if not HAS_TESSERACT:
             return ""
         try:
-            config = "--psm 6 --oem 3"
-            text = pytesseract.image_to_string(img, lang="eng", config=config)
-            return text.strip()
+            return pytesseract.image_to_string(img, lang="eng", config="--psm 6 --oem 3").strip()
         except Exception as e:
-            logger.warning("OCR failed (is Tesseract installed?): %s", e)
+            logger.warning("OCR failed: %s", e)
             return ""
 
     def _parse_messages(self, raw: str) -> list[Tuple[str, str, Channel]]:
+        """Parse OCR into (clean_player_name, text, channel)."""
         results = []
         lines = [l.strip() for l in raw.splitlines() if l.strip()]
+
+        # time?  channel?  Name: message
         pattern = re.compile(
-            r"^(?:\d{1,2}:\d{2}\s+)?"
-            r"(?:\[(?P<chan>[^\]]+)\]\s*)?"
-            r"(?P<player>[^:]{2,48}?)\s*:\s*(?P<text>.+)$",
-            re.IGNORECASE,
+            r"^(?P<head>.*?)\s*:\s*(?P<text>.+)$",
         )
         for line in lines:
             m = pattern.match(line)
             if not m:
                 continue
-            player = m.group("player").strip()
+            head = m.group("head").strip()
             text = m.group("text").strip()
-            if len(player) < 2 or len(player) > 48 or player.isdigit():
+            if not text:
                 continue
-            chan_raw = (m.group("chan") or "all").lower()
-            if "team" in chan_raw:
+
+            player = clean_ocr_player_name(head)
+            if not player or len(player) < 2 or len(player) > 32:
+                continue
+            if player.isdigit():
+                continue
+
+            head_l = head.lower()
+            if "team" in head_l:
                 channel = Channel.TEAM
-            elif "whisper" in chan_raw:
+            elif "whisper" in head_l:
                 channel = Channel.WHISPER
             else:
                 channel = Channel.ALL
+
             results.append((player, text, channel))
         return results
 
     def _fingerprint(self, player: str, text: str) -> str:
-        return f"{player.lower()}|{text.lower()[:60]}"
+        return f"{memory_key(player)}|{(text or '').lower()[:80]}"
 
     async def _poll_once(self) -> list[ChatMessage]:
         if not self.ocr_enabled:
@@ -270,7 +296,7 @@ class SC2StubBackend(ChatBackend):
         raw = self._ocr_image(img)
         if not raw:
             if self._poll_count % self._debug_every == 1:
-                logger.warning("OCR returned empty text — wrong region or Tesseract issue")
+                logger.warning("OCR returned empty text")
             return []
         if raw == self._last_ocr_text:
             return []
@@ -279,28 +305,39 @@ class SC2StubBackend(ChatBackend):
         parsed = self._parse_messages(raw)
         if not parsed and self._poll_count % self._debug_every == 1:
             sample = raw.replace("\n", " | ")[:180]
-            logger.info("OCR text seen but no lines parsed. Sample: %s", sample)
+            logger.info("OCR text but no parse. Sample: %s", sample)
 
-        new_msgs = []
+        new_msgs: list[ChatMessage] = []
         for player, text, channel in parsed:
+            if self._is_self(player):
+                continue
+            if self._is_echo_of_own_send(text):
+                continue
             fp = self._fingerprint(player, text)
             if fp in self._seen:
                 continue
             self._seen.append(fp)
             msg = ChatMessage.from_parts(
-                player=player, text=text, channel=channel, is_self=False, raw=raw
+                player=player,
+                text=text,
+                channel=channel,
+                is_self=False,
+                raw=raw,
             )
-            if msg.player.lower() == self.self_name.lower():
-                continue
+            # Ensure display name is the clean short name
+            object.__setattr__(msg, "display_name", short_display_name(player))
+            object.__setattr__(msg, "player", short_display_name(player) or player)
             new_msgs.append(msg)
         return new_msgs
 
     async def listen(self) -> AsyncIterator[ChatMessage]:
-        logger.info("SC2StubBackend listen() started (OCR=%s)", self.ocr_enabled)
+        logger.info(
+            "SC2StubBackend listen() started (OCR=%s, poll=%.2fs)",
+            self.ocr_enabled,
+            self.poll_interval,
+        )
         if not self.ocr_enabled:
-            logger.warning("OCR reader is disabled. No messages will be yielded.")
-        else:
-            logger.info("Polling every %.1fs for chat lines…", self.poll_interval)
+            logger.warning("OCR disabled — no messages will be yielded.")
 
         while self._connected:
             try:

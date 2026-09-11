@@ -1,22 +1,24 @@
 from __future__ import annotations
-import asyncio
-import random
-import logging
 
-from .config_loader import Config
-from .logger import setup_logger
-from .chat.simulated import SimulatedChatBackend
-from .chat.sc2_stub import SC2StubBackend
-from .chat.base import ChatBackend
-from .llm_client import LLMClient
-from .triggers import TriggerEngine
-from .memory import ConversationMemory
+import asyncio
+import logging
+import random
+
 from .anti_spam import AntiSpam
+from .chat.base import ChatBackend
+from .chat.sc2_stub import SC2StubBackend
+from .chat.simulated import SimulatedChatBackend
 from .commands import CommandHandler
+from .config_loader import Config
 from .decision_engine import DecisionEngine
-from .models import ChatMessage, Channel
-from .paths import resolve_path
 from .diagnostics import run_startup_diagnostics
+from .llm_client import LLMClient
+from .logger import setup_logger
+from .memory import ConversationMemory
+from .models import Channel, ChatMessage
+from .names import memory_key, short_display_name
+from .paths import resolve_path
+from .triggers import TriggerEngine
 
 logger = logging.getLogger("sc2_chatbot")
 
@@ -44,6 +46,14 @@ class SC2ChatBot:
             "topics": dict(self.config.personality.topics),
         }
 
+        # Own account names: owner list + optional sc2_stub.self_name
+        owner_names = list(self.config.owner.get("names") or [])
+        stub_self = (self.config.sc2_stub or {}).get("self_name")
+        if stub_self:
+            owner_names.append(stub_self)
+        self.self_names = {short_display_name(n) for n in owner_names if n}
+        self.self_names.discard("")
+
         llm_cfg = self.config.resolved_llm()
         self.llm = LLMClient(
             provider=llm_cfg.provider,
@@ -53,7 +63,6 @@ class SC2ChatBot:
             max_tokens=llm_cfg.max_output_tokens,
             base_url=llm_cfg.base_url,
         )
-        self.gemini = self.llm  # alias
 
         self.triggers = TriggerEngine(self.config.triggers, self.config.canned_blocks)
 
@@ -82,54 +91,74 @@ class SC2ChatBot:
             self.anti_spam,
             self.personality_state,
             self.config.behaviour,
+            self_names=self.self_names,
         )
 
         self.backend: ChatBackend = self._create_backend()
         self._running = False
+        self._pending: asyncio.PriorityQueue = asyncio.PriorityQueue()
 
     def _create_backend(self) -> ChatBackend:
         if self.config.chat_backend == "sc2_stub":
-            return SC2StubBackend(self.config.sc2_stub)
-        return SimulatedChatBackend(self_name="ChatBot")
+            return SC2StubBackend(
+                self.config.sc2_stub,
+                self_name=next(iter(self.self_names), "ChatBot"),
+                self_names=self.self_names,
+            )
+        return SimulatedChatBackend(self_name=next(iter(self.self_names), "ChatBot"))
 
     def reload_config(self) -> None:
         old_backend = self.config.chat_backend
         self.config = Config.load(self.config_path)
         self.triggers = TriggerEngine(self.config.triggers, self.config.canned_blocks)
-
         self.personality_state["aggressiveness"] = self.config.personality.aggressiveness
         self.personality_state["political_mode"] = self.config.personality.political_mode
         self.personality_state["response_length"] = self.config.personality.response_length
         self.personality_state["emoji_intensity"] = self.config.personality.emoji_intensity
         self.personality_state["topics"] = dict(self.config.personality.topics)
-
         if self.config.chat_backend != old_backend:
-            self.logger.warning(
-                "chat_backend changed from '%s' to '%s'. Restart required.",
-                old_backend,
-                self.config.chat_backend,
-            )
+            self.logger.warning("chat_backend changed — full restart required")
         else:
             self.logger.info("Configuration reloaded")
 
-    async def _human_delay(self) -> None:
-        lo = self.config.behaviour.get("min_reply_delay_sec", 1.2)
-        hi = self.config.behaviour.get("max_reply_delay_sec", 7.5)
+    def _priority_for(self, msg: ChatMessage) -> int:
+        """Lower number = higher priority. Mentions of bot first."""
+        text = (msg.text or "").lower()
+        for name in self.self_names:
+            if name and name.lower() in text:
+                return 0
+        if msg.channel == Channel.WHISPER:
+            return 1
+        return 5
+
+    async def _human_delay(self, directed: bool = False) -> None:
+        if directed:
+            lo = self.config.behaviour.get("min_reply_delay_sec", 1.2) * 0.5
+            hi = self.config.behaviour.get("max_reply_delay_sec", 7.5) * 0.6
+        else:
+            lo = self.config.behaviour.get("min_reply_delay_sec", 1.2)
+            hi = self.config.behaviour.get("max_reply_delay_sec", 7.5)
         await asyncio.sleep(random.uniform(lo, hi))
 
     async def _process_message(self, msg: ChatMessage) -> None:
+        # Hard skip own account even if OCR mis-tagged is_self
+        if memory_key(msg.player) in {memory_key(n) for n in self.self_names}:
+            self.logger.debug("Skip own message from %s", msg.player)
+            return
+
         self.logger.info("RECV %s", msg)
 
         cmd_reply = self.commands.handle(msg)
         if cmd_reply:
-            await self._human_delay()
+            await self._human_delay(directed=True)
             await self.backend.send(cmd_reply, channel=msg.channel)
             self.logger.info("CMD  → %s", cmd_reply)
             return
 
         reply = self.engine.decide_and_generate(msg)
         if reply:
-            await self._human_delay()
+            directed = self._priority_for(msg) == 0
+            await self._human_delay(directed=directed)
             await self.backend.send(
                 reply,
                 channel=msg.channel,
@@ -141,10 +170,11 @@ class SC2ChatBot:
         self._running = True
         llm_cfg = self.config.resolved_llm()
         self.logger.info(
-            "SC2 Chat Bot starting (backend=%s, llm=%s/%s)",
+            "SC2 Chat Bot starting (backend=%s, llm=%s/%s, self=%s)",
             self.config.chat_backend,
             llm_cfg.provider,
             llm_cfg.model,
+            sorted(self.self_names),
         )
         self.logger.warning(
             "REMINDER: Live SC2 automation may violate Blizzard Terms of Service."
