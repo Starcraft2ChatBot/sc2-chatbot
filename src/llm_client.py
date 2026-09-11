@@ -10,7 +10,7 @@ logger = logging.getLogger("sc2_chatbot.llm")
 class LLMClient:
     """Unified generate() for Gemini or any OpenAI-compatible chat API."""
 
-    def __init(
+    def __init__(
         self,
         *,
         provider: str = "gemini",
@@ -120,7 +120,6 @@ class LLMClient:
     ) -> str:
         try:
             messages = [{"role": "system", "content": system_prompt}]
-            # Convert Gemini-style history {role, parts} if present
             for h in history or []:
                 role = h.get("role", "user")
                 if role == "model":
@@ -148,9 +147,14 @@ class LLMClient:
             return ""
 
 
-# Backwards-compatible name used by older imports
 class GeminiClient(LLMClient):
-    def __init__(self, api_key: str, model: str = "gemini-2.0-flash", temperature: float = 0.85, max_tokens: int = 180):
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "gemini-2.0-flash",
+        temperature: float = 0.85,
+        max_tokens: int = 180,
+    ):
         super().__init__(
             provider="gemini",
             api_key=api_key,
