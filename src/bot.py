@@ -46,7 +46,6 @@ class SC2ChatBot:
             "topics": dict(self.config.personality.topics),
         }
 
-        # Own account names: owner list + optional sc2_stub.self_name
         owner_names = list(self.config.owner.get("names") or [])
         stub_self = (self.config.sc2_stub or {}).get("self_name")
         if stub_self:
@@ -96,7 +95,6 @@ class SC2ChatBot:
 
         self.backend: ChatBackend = self._create_backend()
         self._running = False
-        self._pending: asyncio.PriorityQueue = asyncio.PriorityQueue()
 
     def _create_backend(self) -> ChatBackend:
         if self.config.chat_backend == "sc2_stub":
@@ -122,7 +120,6 @@ class SC2ChatBot:
             self.logger.info("Configuration reloaded")
 
     def _priority_for(self, msg: ChatMessage) -> int:
-        """Lower number = higher priority. Mentions of bot first."""
         text = (msg.text or "").lower()
         for name in self.self_names:
             if name and name.lower() in text:
@@ -141,7 +138,6 @@ class SC2ChatBot:
         await asyncio.sleep(random.uniform(lo, hi))
 
     async def _process_message(self, msg: ChatMessage) -> None:
-        # Hard skip own account even if OCR mis-tagged is_self
         if memory_key(msg.player) in {memory_key(n) for n in self.self_names}:
             self.logger.debug("Skip own message from %s", msg.player)
             return
@@ -151,7 +147,7 @@ class SC2ChatBot:
         cmd_reply = self.commands.handle(msg)
         if cmd_reply:
             await self._human_delay(directed=True)
-            await self.backend.send(cmd_reply, channel=msg.channel)
+            await self._send(cmd_reply, msg)
             self.logger.info("CMD  → %s", cmd_reply)
             return
 
@@ -159,12 +155,25 @@ class SC2ChatBot:
         if reply:
             directed = self._priority_for(msg) == 0
             await self._human_delay(directed=directed)
-            await self.backend.send(
-                reply,
-                channel=msg.channel,
-                target=msg.player if msg.channel == Channel.WHISPER else None,
-            )
+            await self._send(reply, msg)
             self.logger.info("SEND → %s", reply)
+
+    async def _send(self, text: str, msg: ChatMessage) -> None:
+        kwargs = {
+            "channel": msg.channel,
+            "target": msg.player if msg.channel == Channel.WHISPER else None,
+        }
+        # SC2StubBackend accepts chat tab hints; Simulated ignores extras
+        send = self.backend.send
+        try:
+            await send(
+                text,
+                chat_tab_index=getattr(msg, "chat_tab_index", 0) or 0,
+                chat_tab=getattr(msg, "chat_tab", "") or "",
+                **kwargs,
+            )
+        except TypeError:
+            await send(text, **kwargs)
 
     async def run(self) -> None:
         self._running = True

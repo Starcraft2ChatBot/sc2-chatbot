@@ -1,11 +1,12 @@
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Optional
 
+from .game_requests import GameRequestInfo, detect_game_request
 from .names import normalize_player_name
-from .game_requests import detect_game_request, GameRequestInfo
 
 
 class Channel(str, Enum):
@@ -23,15 +24,18 @@ class ChatMessage:
     timestamp: datetime = field(default_factory=datetime.utcnow)
     is_self: bool = False
     raw: Optional[str] = None
-    # Optional enrichment (filled by from_parts)
-    display_name: Optional[str] = None          # original name including clan tag
+    display_name: Optional[str] = None
     is_game_request: bool = False
     game_request_kind: str = ""
+    # SC2 lobby numbered chat tab, e.g. "1. General" / index 1
+    chat_tab: str = ""
+    chat_tab_index: int = 0
 
     def __str__(self) -> str:
         tag = " [game-req]" if self.is_game_request else ""
+        tab = f" tab={self.chat_tab}" if self.chat_tab else ""
         shown = self.display_name or self.player
-        return f"[{self.timestamp:%H:%M:%S}] [{self.channel.value}] {shown}: {self.text}{tag}"
+        return f"[{self.timestamp:%H:%M:%S}] [{self.channel.value}{tab}] {shown}: {self.text}{tag}"
 
     @staticmethod
     def from_parts(
@@ -42,8 +46,9 @@ class ChatMessage:
         is_self: bool = False,
         raw: Optional[str] = None,
         timestamp: Optional[datetime] = None,
+        chat_tab: str = "",
+        chat_tab_index: int = 0,
     ) -> "ChatMessage":
-        """Build a ChatMessage with clan-tag stripping and game-request detection."""
         display = (player or "").strip()
         normalized = normalize_player_name(display)
         info: GameRequestInfo = detect_game_request(text or "")
@@ -57,4 +62,6 @@ class ChatMessage:
             display_name=display if display != normalized else None,
             is_game_request=info.is_request,
             game_request_kind=info.kind,
+            chat_tab=chat_tab or "",
+            chat_tab_index=int(chat_tab_index or 0),
         )
