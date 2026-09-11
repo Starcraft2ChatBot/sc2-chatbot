@@ -1,7 +1,19 @@
-# ====================== REQUIRED ======================
+# ====================== AI / LLM ======================
+# Primary AI settings (preferred over legacy gemini: block below)
+llm:
+  provider: "gemini"                      # gemini | openai | openai_compatible | openrouter | custom
+  api_key: "YOUR_API_KEY"                 # or set LLM_API_KEY / GEMINI_API_KEY env var
+  model: "gemini-2.0-flash"               # any model id your provider supports
+  temperature: 0.85
+  max_output_tokens: 180
+  base_url: null                          # for openrouter / local OpenAI-compatible APIs
+  # base_url: "https://openrouter.ai/api/v1"
+  # base_url: "http://127.0.0.1:1234/v1"
+
+# Legacy Gemini block (still works if llm is omitted or api_key is only here)
 gemini:
-  api_key: "YOUR_GEMINI_API_KEY"          # or set GEMINI_API_KEY env var
-  model: "gemini-2.0-flash"               # change to latest stable if needed
+  api_key: ""
+  model: "gemini-2.0-flash"
   temperature: 0.85
   max_output_tokens: 180
 
@@ -35,13 +47,14 @@ personality:
 behaviour:
   min_reply_delay_sec: 1.2
   max_reply_delay_sec: 7.5
-  typo_chance: 0.08
-  reply_probability: 0.75
+  typo_chance: 0.05
+  reply_probability: 0.9                  # higher = replies more often
   ignore_self: true
   ignore_system: true
-  # Game-request handling ([1v1], [2v2], [host], etc.)
   reply_to_game_requests: true
-  game_request_use_canned: true           # short canned lines; set false to always use Gemini
+  game_request_use_canned: false          # false = AI handles [1v1]/host]/lfg etc.
+  address_by_name: true                   # "PlayerName, message…"
+  name_separator: ", "
 
 anti_spam:
   global_cooldown_sec: 8
@@ -50,11 +63,10 @@ anti_spam:
   mute_list: []
   rate_limit_window_sec: 60
 
-# Longer memory + optional disk persistence across restarts
 memory:
-  max_messages_per_player: 30             # was 12; increased for better context
+  max_messages_per_player: 30
   max_total_context_tokens: 2500
-  persist_path: "logs/memory.json"        # set to null to disable persistence
+  persist_path: "logs/memory.json"
 
 # ====================== TRIGGERS / CANNED ======================
 triggers:
@@ -91,9 +103,8 @@ logging:
   console: true
 
 # ====================== CHAT BACKEND ======================
-# "simulated"  = safe testing mode (no live SC2 interaction)
-# "sc2_stub"   = live client via keyboard + optional OCR (HIGH ToS RISK)
-# See README.md section "Enabling live SC2 chat reading + automatic AI replies"
+# "simulated"  = safe testing
+# "sc2_stub"   = live OCR + keyboard (HIGH ToS RISK)
 chat_backend: "simulated"
 
 sc2_stub:
@@ -101,14 +112,14 @@ sc2_stub:
   chat_key: "enter"
   send_key: "enter"
   typing_speed_cps: 11
+  input_method: "paste"                   # paste = full message then Enter (fixes early send)
 
-  # Set to true ONLY after you have measured chat_region and installed OCR deps
   ocr_enabled: false
   poll_interval_sec: 1.8
 
-  # Pixel region of the in-game chat box: [left, top, width, height]
-  # Example only – you must measure this on your own screen
-  chat_region: null                       # e.g. [20, 650, 480, 220]
+  # [left, top, width, height] — measure with tools/measure_chat_region.py
+  chat_region: null
 
-  # Optional full path to tesseract if it is not in PATH
+  # Use forward slashes on Windows to avoid YAML escape issues
   tesseract_cmd: null
+  # tesseract_cmd: "C:/Program Files/Tesseract-OCR/tesseract.exe"
