@@ -5,13 +5,17 @@ rich>=13.0
 python-dotenv>=1.0
 aiofiles>=23.0
 
-# Optional – only needed for the live SC2 stub backend
+# Optional – live SC2 stub backend
 pyautogui>=0.9.54
 PyGetWindow>=0.0.9
 mss>=9.0.0
 Pillow>=10.0.0
 pytesseract>=0.3.10
-# pywin32          # recommended on Windows for better window handling
+pyperclip>=1.8.2
+# pywin32
 
-# Optional – only needed to BUILD the portable folder
+# Optional – OpenAI-compatible providers (OpenAI, OpenRouter, local servers, …)
+# openai>=1.0.0
+
+# Optional – build portable exe
 # pyinstaller>=6.0

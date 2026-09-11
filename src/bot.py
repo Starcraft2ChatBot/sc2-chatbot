@@ -8,7 +8,7 @@ from .logger import setup_logger
 from .chat.simulated import SimulatedChatBackend
 from .chat.sc2_stub import SC2StubBackend
 from .chat.base import ChatBackend
-from .gemini_client import GeminiClient
+from .llm_client import LLMClient
 from .triggers import TriggerEngine
 from .memory import ConversationMemory
 from .anti_spam import AntiSpam
@@ -26,13 +26,11 @@ class SC2ChatBot:
         self.config_path = str(config_path)
         self.config = Config.load(self.config_path)
 
-        # Make log + memory paths absolute under the portable/app root when relative
         log_cfg = dict(self.config.logging or {})
         if log_cfg.get("file"):
             log_cfg["file"] = str(resolve_path(log_cfg["file"]))
         self.logger = setup_logger(log_cfg)
 
-        # Console health report (Gemini, deps, OCR region, Tesseract, …)
         try:
             run_startup_diagnostics(self.config)
         except Exception:
@@ -46,12 +44,17 @@ class SC2ChatBot:
             "topics": dict(self.config.personality.topics),
         }
 
-        self.gemini = GeminiClient(
-            api_key=self.config.gemini.api_key,
-            model=self.config.gemini.model,
-            temperature=self.config.gemini.temperature,
-            max_tokens=self.config.gemini.max_output_tokens,
+        llm_cfg = self.config.resolved_llm()
+        self.llm = LLMClient(
+            provider=llm_cfg.provider,
+            api_key=llm_cfg.api_key,
+            model=llm_cfg.model,
+            temperature=llm_cfg.temperature,
+            max_tokens=llm_cfg.max_output_tokens,
+            base_url=llm_cfg.base_url,
         )
+        self.gemini = self.llm  # alias
+
         self.triggers = TriggerEngine(self.config.triggers, self.config.canned_blocks)
 
         mem_cfg = dict(self.config.memory or {})
@@ -73,7 +76,7 @@ class SC2ChatBot:
         )
 
         self.engine = DecisionEngine(
-            self.gemini,
+            self.llm,
             self.triggers,
             self.memory,
             self.anti_spam,
@@ -90,7 +93,6 @@ class SC2ChatBot:
         return SimulatedChatBackend(self_name="ChatBot")
 
     def reload_config(self) -> None:
-        """Reload YAML settings. Note: changing chat_backend requires a full restart."""
         old_backend = self.config.chat_backend
         self.config = Config.load(self.config_path)
         self.triggers = TriggerEngine(self.config.triggers, self.config.canned_blocks)
@@ -103,8 +105,7 @@ class SC2ChatBot:
 
         if self.config.chat_backend != old_backend:
             self.logger.warning(
-                "chat_backend changed from '%s' to '%s'. "
-                "A full restart is required for the new backend to take effect.",
+                "chat_backend changed from '%s' to '%s'. Restart required.",
                 old_backend,
                 self.config.chat_backend,
             )
@@ -138,10 +139,15 @@ class SC2ChatBot:
 
     async def run(self) -> None:
         self._running = True
-        self.logger.info("SC2 Chat Bot starting (backend=%s)", self.config.chat_backend)
+        llm_cfg = self.config.resolved_llm()
+        self.logger.info(
+            "SC2 Chat Bot starting (backend=%s, llm=%s/%s)",
+            self.config.chat_backend,
+            llm_cfg.provider,
+            llm_cfg.model,
+        )
         self.logger.warning(
-            "REMINDER: Any automation that interacts with the live SC2 client "
-            "may violate Blizzard Terms of Service and risk account bans."
+            "REMINDER: Live SC2 automation may violate Blizzard Terms of Service."
         )
 
         while self._running:
