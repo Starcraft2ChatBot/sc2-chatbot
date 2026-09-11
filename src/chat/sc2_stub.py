@@ -9,7 +9,7 @@ import random
 import re
 import time
 from collections import deque
-from typing import AsyncIterator, Deque, Iterable, Optional, Set, Tuple
+from typing import AsyncIterator, Deque, Iterable, List, Optional, Set, Tuple
 
 from ..models import Channel, ChatMessage
 from ..names import clean_ocr_player_name, memory_key, short_display_name
@@ -53,11 +53,12 @@ try:
 except ImportError:
     pass
 
-# [1. General] or [2. Arcade] or 1. General]
 _TAB_RE = re.compile(
     r"[\[\|]?\s*(\d+)\s*[\.,]?\s*([A-Za-z][^\]\|]*)[\]\|]?",
     re.IGNORECASE,
 )
+
+ParsedLine = Tuple[str, str, Channel, str, int, str]  # player, text, ch, tab, idx, fp
 
 
 class SC2StubBackend(ChatBackend):
@@ -84,21 +85,23 @@ class SC2StubBackend(ChatBackend):
         self.switch_channels = bool(self.cfg.get("switch_channels", True))
 
         self.ocr_enabled = bool(self.cfg.get("ocr_enabled", False))
-        self.poll_interval = float(self.cfg.get("poll_interval_sec", 0.6))
+        # Never allow 0 — burns CPU and destabilizes OCR
+        self.poll_interval = max(0.25, float(self.cfg.get("poll_interval_sec", 0.5) or 0.5))
         self.chat_region = self.cfg.get("chat_region")
         self.tesseract_cmd = self.cfg.get("tesseract_cmd")
         self._debug_every = int(self.cfg.get("ocr_debug_every_n_polls", 15))
-        # Only treat the last N parsed lines as candidates for *new* messages
-        self._new_line_window = int(self.cfg.get("new_message_line_window", 5))
         self._poll_count = 0
 
         self._connected = False
+        # Long-term: never re-emit the same logical line
         self._seen: Set[str] = set()
-        self._seen_order: Deque[str] = deque(maxlen=500)
+        self._seen_order: Deque[str] = deque(maxlen=800)
+        # Previous OCR frame fingerprints (for “appeared this frame” detection)
+        self._prev_frame_fps: Set[str] = set()
         self._recent_sends: Deque[str] = deque(maxlen=40)
         self._last_ocr_text = ""
         self._history_seeded = False
-        self._current_tab_index = 1  # assume General / first tab
+        self._current_tab_index = 1
         self._lock = asyncio.Lock()
 
         if self.tesseract_cmd and HAS_TESSERACT:
@@ -140,17 +143,16 @@ class SC2StubBackend(ChatBackend):
             return
         self._seen.add(fp)
         self._seen_order.append(fp)
-        while len(self._seen) > 500 and self._seen_order:
+        while len(self._seen) > 800 and self._seen_order:
             old = self._seen_order.popleft()
             self._seen.discard(old)
 
     async def connect(self) -> None:
         self._connected = True
         logger.info(
-            "SC2StubBackend connected (OCR=%s, input=%s, switch_channels=%s, ignore=%s)",
+            "SC2StubBackend connected (OCR=%s, poll=%.2fs, ignore=%s)",
             self.ocr_enabled,
-            self.input_method,
-            self.switch_channels,
+            self.poll_interval,
             sorted(self._self_keys),
         )
 
@@ -211,19 +213,11 @@ class SC2StubBackend(ChatBackend):
             time.sleep(delay * random.uniform(0.7, 1.2))
 
     def _switch_to_tab(self, target_index: int) -> None:
-        """Cycle chat tabs with Tab until target index (best-effort)."""
         if not target_index or target_index < 1:
             return
-        if target_index == self._current_tab_index:
+        if target_index == self._current_tab_index or not self.switch_channels:
             return
-        if not self.switch_channels:
-            return
-
-        # Unknown current tab: Tab forward up to max_chat_tabs to land on target
-        # SC2 cycles tabs with Tab while chat is focused.
         steps = (target_index - self._current_tab_index) % max(self.max_chat_tabs, 2)
-        if steps == 0:
-            steps = 0
         logger.info(
             "Switching chat tab %s → %s (%s x %s)",
             self._current_tab_index,
@@ -261,8 +255,6 @@ class SC2StubBackend(ChatBackend):
                 return
 
             await asyncio.sleep(random.uniform(0.12, 0.25))
-
-            # Open chat input first, then switch channel with Tab if needed
             pyautogui.press(self.chat_key)
             await asyncio.sleep(random.uniform(0.3, 0.45))
 
@@ -322,14 +314,15 @@ class SC2StubBackend(ChatBackend):
             idx = int(m.group(1))
         except ValueError:
             idx = 0
-        label = f"{m.group(1)}. {m.group(2).strip()}"
-        return label, idx
+        return f"{m.group(1)}. {m.group(2).strip()}", idx
 
-    def _parse_messages(
-        self, raw: str
-    ) -> list[Tuple[str, str, Channel, str, int]]:
-        """(player, text, channel, chat_tab, chat_tab_index)"""
-        results = []
+    def _fingerprint(self, player: str, text: str) -> str:
+        p = memory_key(player)
+        t = re.sub(r"[^a-z0-9]+", "", (text or "").lower())[:70]
+        return f"{p}|{t}"
+
+    def _parse_messages(self, raw: str) -> List[ParsedLine]:
+        results: List[ParsedLine] = []
         lines = [l.strip() for l in raw.splitlines() if l.strip()]
         pattern = re.compile(r"^(?P<head>.*?)\s*:\s*(?P<text>.+)$")
 
@@ -355,14 +348,9 @@ class SC2StubBackend(ChatBackend):
             else:
                 channel = Channel.ALL
 
-            results.append((player, text, channel, tab, tab_idx))
+            fp = self._fingerprint(player, text)
+            results.append((player, text, channel, tab, tab_idx, fp))
         return results
-
-    def _fingerprint(self, player: str, text: str) -> str:
-        # Normalize so OCR noise on old lines does not re-fire
-        p = memory_key(player)
-        t = re.sub(r"[^a-z0-9]+", "", (text or "").lower())[:70]
-        return f"{p}|{t}"
 
     async def _poll_once(self) -> list[ChatMessage]:
         if not self.ocr_enabled:
@@ -378,43 +366,51 @@ class SC2StubBackend(ChatBackend):
             if self._poll_count % self._debug_every == 1:
                 logger.warning("OCR returned empty text")
             return []
-        if raw == self._last_ocr_text:
-            return []
-        self._last_ocr_text = raw
 
         parsed = self._parse_messages(raw)
         if not parsed:
             if self._poll_count % self._debug_every == 1:
-                sample = raw.replace("\n", " | ")[:180]
+                sample = raw.replace("\n", " | ")[:200]
                 logger.info("OCR text but no parse. Sample: %s", sample)
             return []
 
-        # First successful OCR: seed history so we do NOT dump old chat as new
+        curr_fps = {fp for *_, fp in parsed}
+
+        # First frame: remember everything on screen, emit nothing
         if not self._history_seeded:
-            for player, text, channel, tab, tab_idx in parsed:
-                self._remember_fp(self._fingerprint(player, text))
+            for *_, fp in parsed:
+                self._remember_fp(fp)
+            self._prev_frame_fps = curr_fps
             self._history_seeded = True
+            self._last_ocr_text = raw
             logger.info(
-                "Seeded %d existing chat lines (will only report NEW messages after this)",
+                "Seeded %d chat lines — only lines that APPEAR after this will be logged",
                 len(parsed),
             )
             return []
 
-        # Newest lines are at the bottom of the OCR block
-        window = max(1, self._new_line_window)
-        candidates = parsed[-window:]
+        # Lines present now that were not in the previous OCR frame
+        appeared = curr_fps - self._prev_frame_fps
+        self._prev_frame_fps = curr_fps
 
+        if not appeared:
+            return []
+
+        # Walk bottom → top so the newest visible lines are preferred
         new_msgs: list[ChatMessage] = []
-        for player, text, channel, tab, tab_idx in candidates:
-            if self._is_self(player):
+        for player, text, channel, tab, tab_idx, fp in reversed(parsed):
+            if fp not in appeared:
                 continue
-            if self._is_echo_of_own_send(text):
-                continue
-            fp = self._fingerprint(player, text)
             if fp in self._seen:
                 continue
-            self._remember_fp(fp)
+            if self._is_self(player):
+                self._remember_fp(fp)
+                continue
+            if self._is_echo_of_own_send(text):
+                self._remember_fp(fp)
+                continue
 
+            self._remember_fp(fp)
             clean = short_display_name(player) or player
             msg = ChatMessage.from_parts(
                 player=clean,
@@ -428,19 +424,15 @@ class SC2StubBackend(ChatBackend):
             object.__setattr__(msg, "display_name", clean)
             new_msgs.append(msg)
 
-            # Track last seen tab from incoming traffic
-            if tab_idx:
-                # don't force current tab from OCR of other people's channels
-                pass
-
+        # new_msgs is newest-first; reverse to chronological for the bot
+        new_msgs.reverse()
         return new_msgs
 
     async def listen(self) -> AsyncIterator[ChatMessage]:
         logger.info(
-            "SC2StubBackend listen() OCR=%s poll=%.2fs window=%d",
+            "SC2StubBackend listen() OCR=%s poll=%.2fs (frame-diff new lines only)",
             self.ocr_enabled,
             self.poll_interval,
-            self._new_line_window,
         )
         if not self.ocr_enabled:
             logger.warning("OCR disabled — no messages will be yielded.")
