@@ -6,6 +6,7 @@
 **Educational / research project only.**
 
 A modular, production-oriented StarCraft 2 **chat-only** bot that:
+- Accepts free ai models from https://build.nvidia.com/models
 - Monitors chat (all / team / whispers) via a pluggable backend
 - Automatically decides whether to reply
 - Uses Google Gemini with highly configurable personality
