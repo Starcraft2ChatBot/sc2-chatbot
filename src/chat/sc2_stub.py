@@ -60,6 +60,9 @@ _TAB_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Owner command prefix variants OCR might produce (! is default)
+_CMD_PREFIX_RE = re.compile(r"^[!！|iI1l/\\]\s*\w+")
+
 ParsedLine = Tuple[str, str, Channel, str, int, str]
 
 
@@ -124,6 +127,16 @@ class SC2StubBackend(ChatBackend):
 
     def _is_self(self, player: str) -> bool:
         return memory_key(player) in self._self_keys
+
+    def _looks_like_command(self, text: str) -> bool:
+        """True if text looks like an owner command (e.g. !status, !tone 5)."""
+        t = (text or "").strip()
+        if not t:
+            return False
+        if t.startswith("!"):
+            return True
+        # OCR sometimes misreads ! as |, i, l, 1, /
+        return bool(_CMD_PREFIX_RE.match(t))
 
     def _is_echo_of_own_send(self, text: str) -> bool:
         t = re.sub(r"[^a-z0-9]+", "", (text or "").lower())
@@ -464,7 +477,13 @@ class SC2StubBackend(ChatBackend):
             if appeared and fp not in appeared:
                 self._remember_fp(fp)
                 continue
-            if self._is_self(player) or self._is_echo_of_own_send(text):
+
+            # Skip own chat — but allow lines that look like owner commands
+            # (!status, !tone 5, …) so in-game commands reach CommandHandler.
+            if self._is_echo_of_own_send(text):
+                self._remember_fp(fp)
+                continue
+            if self._is_self(player) and not self._looks_like_command(text):
                 self._remember_fp(fp)
                 continue
 
@@ -474,7 +493,7 @@ class SC2StubBackend(ChatBackend):
                 player=clean,
                 text=text,
                 channel=channel,
-                is_self=False,
+                is_self=self._is_self(player),
                 raw=raw,
                 chat_tab=tab,
                 chat_tab_index=tab_idx,
