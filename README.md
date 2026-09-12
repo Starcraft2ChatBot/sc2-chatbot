@@ -1,4 +1,4 @@
-# SC2 Chat-Only Bot (AI-powered)
+# Production Ready SC2 Chat-Only Bot (AI-powered)
 
 **Educational / research project only.**
 
