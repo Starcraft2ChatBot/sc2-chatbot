@@ -5,6 +5,9 @@ import random
 import re
 from typing import Any, Optional, Set
 
+from rich.console import Console
+from rich.status import Status
+
 from .anti_spam import AntiSpam
 from .memory import ConversationMemory
 from .models import Channel, ChatMessage
@@ -144,7 +147,15 @@ class DecisionEngine:
             f"Player '{label}' said:\n\"{msg.text}\"\n\n"
             f"Write one in-character chat reply.{extra}"
         )
-        body = self.llm.generate(system, user_prompt, history)
+
+        # Show progress only while the actual LLM call is running (the slow part).
+        # Canned / trigger replies above skip this entirely.
+        with Status(
+            "[cyan]AI generating reply…[/cyan]",
+            console=Console(stderr=True),
+            spinner="dots",
+        ):
+            body = self.llm.generate(system, user_prompt, history)
 
         if not body:
             body = "what do you mean" if "?" in (msg.text or "") else random.choice(FALLBACKS)
