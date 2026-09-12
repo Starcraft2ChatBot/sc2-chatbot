@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Optional
 
 from .game_requests import GameRequestInfo, detect_game_request
-from .names import normalize_player_name
+from .names import short_display_name
 
 
 class Channel(str, Enum):
@@ -27,13 +27,13 @@ class ChatMessage:
     display_name: Optional[str] = None
     is_game_request: bool = False
     game_request_kind: str = ""
-    # SC2 lobby numbered chat tab, e.g. "1. General" / index 1
     chat_tab: str = ""
     chat_tab_index: int = 0
 
     def __str__(self) -> str:
         tag = " [game-req]" if self.is_game_request else ""
         tab = f" tab={self.chat_tab}" if self.chat_tab else ""
+        # Always bare nickname — never timestamp/clan/channel chrome
         shown = self.display_name or self.player
         return f"[{self.timestamp:%H:%M:%S}] [{self.channel.value}{tab}] {shown}: {self.text}{tag}"
 
@@ -49,19 +49,30 @@ class ChatMessage:
         chat_tab: str = "",
         chat_tab_index: int = 0,
     ) -> "ChatMessage":
-        display = (player or "").strip()
-        normalized = normalize_player_name(display)
+        # BOTH fields are the cleaned bare name only
+        clean = short_display_name(player) or short_display_name(player or "")
+        if not clean:
+            clean = re_fallback(player)
         info: GameRequestInfo = detect_game_request(text or "")
         return ChatMessage(
-            player=normalized or display,
+            player=clean,
             text=text,
             channel=channel,
             timestamp=timestamp or datetime.utcnow(),
             is_self=is_self,
             raw=raw,
-            display_name=display if display != normalized else None,
+            display_name=clean,
             is_game_request=info.is_request,
             game_request_kind=info.kind,
             chat_tab=chat_tab or "",
             chat_tab_index=int(chat_tab_index or 0),
         )
+
+
+def re_fallback(player: str) -> str:
+    import re
+
+    s = (player or "").strip()
+    s = re.sub(r"[\[\{\(<][^\]\}\)>]*[\]\}\)>]", " ", s)
+    toks = re.findall(r"[A-Za-z][A-Za-z0-9_'\-]{1,23}", s)
+    return toks[-1] if toks else (s[:24] if s else "unknown")
