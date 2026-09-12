@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -14,6 +15,18 @@ class Channel(str, Enum):
     TEAM = "team"
     WHISPER = "whisper"
     SYSTEM = "system"
+
+
+def _bare_name(player: str) -> str:
+    """Strict bare nickname only."""
+    clean = short_display_name(player)
+    if clean:
+        return clean
+    s = (player or "").strip()
+    s = re.sub(r"[\[\{\(<][^\]\}\)>]*[\]\}\)>]", " ", s)
+    s = re.sub(r"\d{1,2}:\d{2}(?::\d{2})?", " ", s)
+    toks = re.findall(r"[A-Za-z][A-Za-z0-9_'\-]{1,23}", s)
+    return toks[-1] if toks else "unknown"
 
 
 @dataclass(frozen=True)
@@ -33,7 +46,6 @@ class ChatMessage:
     def __str__(self) -> str:
         tag = " [game-req]" if self.is_game_request else ""
         tab = f" tab={self.chat_tab}" if self.chat_tab else ""
-        # Always bare nickname — never timestamp/clan/channel chrome
         shown = self.display_name or self.player
         return f"[{self.timestamp:%H:%M:%S}] [{self.channel.value}{tab}] {shown}: {self.text}{tag}"
 
@@ -49,10 +61,8 @@ class ChatMessage:
         chat_tab: str = "",
         chat_tab_index: int = 0,
     ) -> "ChatMessage":
-        # BOTH fields are the cleaned bare name only
-        clean = short_display_name(player) or short_display_name(player or "")
-        if not clean:
-            clean = re_fallback(player)
+        # Always bare nickname — never timestamp / channel / clan in these fields
+        clean = _bare_name(player)
         info: GameRequestInfo = detect_game_request(text or "")
         return ChatMessage(
             player=clean,
@@ -67,12 +77,3 @@ class ChatMessage:
             chat_tab=chat_tab or "",
             chat_tab_index=int(chat_tab_index or 0),
         )
-
-
-def re_fallback(player: str) -> str:
-    import re
-
-    s = (player or "").strip()
-    s = re.sub(r"[\[\{\(<][^\]\}\)>]*[\]\}\)>]", " ", s)
-    toks = re.findall(r"[A-Za-z][A-Za-z0-9_'\-]{1,23}", s)
-    return toks[-1] if toks else (s[:24] if s else "unknown")
