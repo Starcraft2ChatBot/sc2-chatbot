@@ -185,6 +185,94 @@ class SC2ChatBot:
         except TypeError:
             await self.backend.send(text, **kwargs)
 
+    def _log_config_summary(self) -> None:
+        """Print active config options to the console at startup."""
+        llm = self.config.resolved_llm()
+        p = self.personality_state
+        beh = self.config.behaviour or {}
+        spam = self.config.anti_spam or {}
+        mem = self.config.memory or {}
+        stub = self.config.sc2_stub or {}
+        owner = self.config.owner or {}
+
+        key = (llm.api_key or "").strip()
+        if not key:
+            key_disp = "(missing)"
+        elif len(key) <= 8:
+            key_disp = "****"
+        else:
+            key_disp = f"{key[:4]}…{key[-4:]}"
+
+        topics = p.get("topics") or {}
+        topics_on = [k for k, v in topics.items() if v] or ["(none)"]
+
+        lines = [
+            "=" * 60,
+            "  ACTIVE CONFIG",
+            "=" * 60,
+            f"  config_file:          {self.config_path}",
+            f"  chat_backend:         {self.config.chat_backend}",
+            "",
+            "  -- LLM --",
+            f"  provider:             {llm.provider}",
+            f"  model:                {llm.model}",
+            f"  api_key:              {key_disp}",
+            f"  base_url:             {llm.base_url or '(default)'}",
+            f"  temperature:          {llm.temperature}",
+            f"  max_output_tokens:    {llm.max_output_tokens}",
+            "",
+            "  -- Personality --",
+            f"  mode:                 {p.get('political_mode')}",
+            f"  aggressiveness:       {p.get('aggressiveness')}",
+            f"  response_length:      {p.get('response_length')}",
+            f"  emoji_intensity:      {p.get('emoji_intensity')}",
+            f"  sc2_reference_level:  {p.get('sc2_reference_level')}",
+            f"  topics enabled:       {', '.join(str(t) for t in topics_on)}",
+            "",
+            "  -- Behaviour --",
+            f"  reply_probability:    {beh.get('reply_probability', 0.9)}",
+            f"  min_reply_delay_sec:  {beh.get('min_reply_delay_sec', 0.35)}",
+            f"  max_reply_delay_sec:  {beh.get('max_reply_delay_sec', 0.8)}",
+            f"  typo_chance:          {beh.get('typo_chance', 0.0)}",
+            f"  address_by_name:      {beh.get('address_by_name', True)}",
+            f"  reply_to_game_reqs:   {beh.get('reply_to_game_requests', False)}",
+            "",
+            "  -- Anti-spam --",
+            f"  global_cooldown_sec:  {spam.get('global_cooldown_sec', 8)}",
+            f"  per_player_cooldown:  {spam.get('per_player_cooldown_sec', 25)}",
+            f"  max_replies_per_min:  {spam.get('max_replies_per_player_per_minute', 3)}",
+            f"  mute_list size:       {len(spam.get('mute_list') or [])}",
+            "",
+            "  -- Memory / owner --",
+            f"  max_msgs_per_player:  {mem.get('max_messages_per_player', 30)}",
+            f"  persist_path:         {mem.get('persist_path') or '(none)'}",
+            f"  owner_names:          {list(owner.get('names') or [])}",
+            f"  command_prefix:       {owner.get('command_prefix', '!')}",
+            f"  self_names:           {sorted(self.self_names)}",
+            f"  triggers:             {len(self.config.triggers or [])}",
+            f"  canned_blocks:        {len(self.config.canned_blocks or [])}",
+        ]
+
+        if self.config.chat_backend == "sc2_stub":
+            region = stub.get("chat_region")
+            lines.extend(
+                [
+                    "",
+                    "  -- SC2 stub / OCR --",
+                    f"  ocr_enabled:          {bool(stub.get('ocr_enabled', False))}",
+                    f"  chat_region:          {region}",
+                    f"  poll_interval_sec:    {stub.get('poll_interval_sec', 0.45)}",
+                    f"  window_title:         {stub.get('window_title', 'StarCraft II')}",
+                    f"  input_method:         {stub.get('input_method', 'paste')}",
+                    f"  self_name:            {stub.get('self_name') or '(unset)'}",
+                    f"  switch_channels:      {bool(stub.get('switch_channels', False))}",
+                ]
+            )
+
+        lines.extend(["=" * 60, ""])
+        for line in lines:
+            self.logger.info("%s", line)
+
     async def run(self) -> None:
         self._running = True
         llm_cfg = self.config.resolved_llm()
@@ -197,6 +285,7 @@ class SC2ChatBot:
             self.personality_state.get("sc2_reference_level"),
             sorted(self.self_names),
         )
+        self._log_config_summary()
         self.logger.warning(
             "REMINDER: Live SC2 automation may violate Blizzard Terms of Service."
         )
