@@ -38,12 +38,14 @@ class SC2ChatBot:
         except Exception:
             self.logger.exception("Diagnostics failed (continuing startup)")
 
+        p = self.config.personality
         self.personality_state = {
-            "aggressiveness": self.config.personality.aggressiveness,
-            "political_mode": self.config.personality.political_mode,
-            "response_length": self.config.personality.response_length,
-            "emoji_intensity": self.config.personality.emoji_intensity,
-            "topics": dict(self.config.personality.topics),
+            "aggressiveness": p.aggressiveness,
+            "political_mode": p.political_mode,
+            "response_length": p.response_length,
+            "emoji_intensity": p.emoji_intensity,
+            "sc2_reference_level": getattr(p, "sc2_reference_level", 2),
+            "topics": dict(p.topics),
         }
 
         owner_names = list(self.config.owner.get("names") or [])
@@ -109,11 +111,13 @@ class SC2ChatBot:
         old_backend = self.config.chat_backend
         self.config = Config.load(self.config_path)
         self.triggers = TriggerEngine(self.config.triggers, self.config.canned_blocks)
-        self.personality_state["aggressiveness"] = self.config.personality.aggressiveness
-        self.personality_state["political_mode"] = self.config.personality.political_mode
-        self.personality_state["response_length"] = self.config.personality.response_length
-        self.personality_state["emoji_intensity"] = self.config.personality.emoji_intensity
-        self.personality_state["topics"] = dict(self.config.personality.topics)
+        p = self.config.personality
+        self.personality_state["aggressiveness"] = p.aggressiveness
+        self.personality_state["political_mode"] = p.political_mode
+        self.personality_state["response_length"] = p.response_length
+        self.personality_state["emoji_intensity"] = p.emoji_intensity
+        self.personality_state["sc2_reference_level"] = getattr(p, "sc2_reference_level", 2)
+        self.personality_state["topics"] = dict(p.topics)
         if self.config.chat_backend != old_backend:
             self.logger.warning("chat_backend changed — full restart required")
         else:
@@ -129,12 +133,13 @@ class SC2ChatBot:
         return 5
 
     async def _human_delay(self, directed: bool = False) -> None:
+        lo = float(self.config.behaviour.get("min_reply_delay_sec", 0.35))
+        hi = float(self.config.behaviour.get("max_reply_delay_sec", 0.8))
         if directed:
-            lo = self.config.behaviour.get("min_reply_delay_sec", 1.2) * 0.5
-            hi = self.config.behaviour.get("max_reply_delay_sec", 7.5) * 0.6
-        else:
-            lo = self.config.behaviour.get("min_reply_delay_sec", 1.2)
-            hi = self.config.behaviour.get("max_reply_delay_sec", 7.5)
+            lo *= 0.6
+            hi *= 0.7
+        if hi < lo:
+            hi = lo
         await asyncio.sleep(random.uniform(lo, hi))
 
     async def _process_message(self, msg: ChatMessage) -> None:
@@ -163,26 +168,26 @@ class SC2ChatBot:
             "channel": msg.channel,
             "target": msg.player if msg.channel == Channel.WHISPER else None,
         }
-        # SC2StubBackend accepts chat tab hints; Simulated ignores extras
-        send = self.backend.send
         try:
-            await send(
+            await self.backend.send(
                 text,
                 chat_tab_index=getattr(msg, "chat_tab_index", 0) or 0,
                 chat_tab=getattr(msg, "chat_tab", "") or "",
                 **kwargs,
             )
         except TypeError:
-            await send(text, **kwargs)
+            await self.backend.send(text, **kwargs)
 
     async def run(self) -> None:
         self._running = True
         llm_cfg = self.config.resolved_llm()
         self.logger.info(
-            "SC2 Chat Bot starting (backend=%s, llm=%s/%s, self=%s)",
+            "SC2 Chat Bot starting (backend=%s, llm=%s/%s, mode=%s, sc2_ref=%s, self=%s)",
             self.config.chat_backend,
             llm_cfg.provider,
             llm_cfg.model,
+            self.personality_state.get("political_mode"),
+            self.personality_state.get("sc2_reference_level"),
             sorted(self.self_names),
         )
         self.logger.warning(

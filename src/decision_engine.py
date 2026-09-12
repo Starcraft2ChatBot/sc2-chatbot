@@ -14,16 +14,16 @@ from .triggers import TriggerEngine
 
 logger = logging.getLogger("sc2_chatbot.decision")
 
-FALLBACKS = ["lol", "true", "idk", "gg", "nice", "bruh", "lmao"]
+FALLBACKS = ["lol", "true", "idk", "nice", "bruh", "lmao", "sure"]
 
 GAME_REQUEST_REPLIES = {
-    "1v1": ["gl hf", "1v1? sure", "come on then", "bet"],
-    "2v2": ["looking for 2v2 too", "I can fill", "gl"],
+    "1v1": ["gl hf", "1v1? sure", "bet"],
+    "2v2": ["I can fill", "gl"],
     "3v3": ["gl", "maybe later"],
-    "4v4": ["gl", "big lobby"],
+    "4v4": ["gl"],
     "host": ["inv me", "send invite"],
-    "lfg": ["what mode?", "1v1 or 2v2?"],
-    "other": ["gl", "down", "sure"],
+    "lfg": ["what mode?"],
+    "other": ["gl", "sure"],
 }
 
 
@@ -64,12 +64,9 @@ class DecisionEngine:
             return False
         if msg.channel == Channel.SYSTEM and self.behaviour.get("ignore_system", True):
             return False
-
-        # Always prioritize messages that @ the bot / contain our name
         if self._mentions_bot(msg):
             return self.anti_spam.can_reply(msg)
-
-        prob = float(self.behaviour.get("reply_probability", 0.85))
+        prob = float(self.behaviour.get("reply_probability", 0.9))
         if random.random() > prob:
             return False
         return self.anti_spam.can_reply(msg)
@@ -129,35 +126,41 @@ class DecisionEngine:
             topics=self.state.get("topics", {}),
             channel=msg.channel.value,
             player_name=label,
+            sc2_reference_level=int(self.state.get("sc2_reference_level", 2)),
         )
 
         extra = ""
         if self._mentions_bot(msg):
-            extra += "\nThey mentioned you / your name — reply to them directly."
+            extra += "\nThey mentioned you — reply to them directly."
         if msg.is_game_request:
-            extra += (
-                f"\nThis looks like a game request (kind={msg.game_request_kind or 'other'})."
-            )
+            extra += f"\nLooks like a lobby/game request ({msg.game_request_kind or 'other'})."
 
-        history_msgs = self.memory.get_context(msg.player)
         history = []
-        for h in history_msgs[-10:]:
+        for h in self.memory.get_context(msg.player)[-10:]:
             role = "user" if not h.is_self else "model"
             history.append({"role": role, "parts": [h.text]})
 
         user_prompt = (
             f"Player '{label}' said:\n\"{msg.text}\"\n\n"
-            f"Reply to THAT message only as a SC2 player.{extra}"
+            f"Write one in-character chat reply.{extra}"
         )
         body = self.llm.generate(system, user_prompt, history)
 
         if not body:
             body = "what do you mean" if "?" in (msg.text or "") else random.choice(FALLBACKS)
 
-        if random.random() < self.behaviour.get("typo_chance", 0.05):
+        if random.random() < self.behaviour.get("typo_chance", 0.0):
             body = self._introduce_typo(body)
 
         body = body.strip().strip('"').strip("'")
+        # Strip accidental channel tags the model might echo
+        body = re.sub(
+            r"^\[?\d*\.?\s*(?:General|Arcade|Co-?op|All|Team|Whisper)\]?\s*",
+            "",
+            body,
+            flags=re.I,
+        ).strip()
+
         reply = self._address_player(msg, body)
         self.anti_spam.record_reply(msg.player)
         self._store_exchange(msg, reply)

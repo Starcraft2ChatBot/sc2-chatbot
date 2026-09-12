@@ -9,20 +9,24 @@ _CLAN_TAG_RE = re.compile(
 )
 _BATTLETAG_RE = re.compile(r"#\d{4,5}$")
 
-# OCR often mangles "17:52" into "1752" and glues it to the channel tag
 _LEADING_TIME_RE = re.compile(
-    r"^(?:"
-    r"\d{1,2}:\d{2}"  # 17:52
-    r"|\d{3,4}"  # 1752 (OCR lost the colon)
-    r")\s*",
+    r"^(?:\d{1,2}:\d{2}|\d{3,4})\s*",
 )
-_CHANNEL_TAG_RE = re.compile(
-    r"^[\|\[]?\s*\d*\.?\s*(?:All|Team|Whisper|General|Arcade|Chat|\d+)\s*[^\]\|]*[\]\|]?\s*",
+
+# Known SC2 chat channel names (used to strip UI chrome / doubled tags)
+_CHAN_NAMES = (
+    r"All|Team|Whisper|General|Arcade|Chat|"
+    r"Co-?op(?:\s*Missions)?|PM|Party|Battle\.net"
+)
+
+# Repeated / doubled channel tags anywhere in the head
+_CHANNEL_CHUNK_RE = re.compile(
+    rf"[\|\[\(\s]*\d{{0,2}}\s*[.\:,]?\s*(?:{_CHAN_NAMES})[\]\)\|\s,]*",
     re.IGNORECASE,
 )
-# Strip leftover junk like "1. General]" or "[1, General]"
-_LEFTOVER_CHAN_RE = re.compile(
-    r"^[\|\[\]\s,\.]*\d*\.?\s*(?:All|Team|Whisper|General|Arcade)[\|\[\]\s,\.]*",
+
+_ONLY_CHANNEL_RE = re.compile(
+    rf"^[\|\[\s]*\d{{0,2}}\s*[.\:,]?\s*(?:{_CHAN_NAMES})[\]\|\s]*$",
     re.IGNORECASE,
 )
 
@@ -37,23 +41,28 @@ def strip_clan_tag(name: str) -> str:
 def clean_ocr_player_name(raw: str) -> str:
     """Turn OCR garbage into a bare player name.
 
-    Examples:
+    Handles doubled tags like:
+      'PM [2. General] PM [2. General] TvTisTrash' -> 'TvTisTrash'
       '1752[1. General] FurryFemboy' -> 'FurryFemboy'
-      '|1. General] Drunknmaster'    -> 'Drunknmaster'
-      '[All] Serral'                 -> 'Serral'
-      '17:52 [1. General] Bob'       -> 'Bob'
     """
     if not raw:
         return ""
     n = raw.strip()
     n = _LEADING_TIME_RE.sub("", n)
-    n = _CHANNEL_TAG_RE.sub("", n)
-    n = _LEFTOVER_CHAN_RE.sub("", n)
-    n = n.strip(" []|()<>{},.")
+    # Strip channel chunks repeatedly (OCR often doubles them)
+    for _ in range(6):
+        n2 = _CHANNEL_CHUNK_RE.sub(" ", n)
+        n2 = re.sub(r"\s+", " ", n2).strip(" []|()<>{},.")
+        if n2 == n:
+            break
+        n = n2
     n = strip_clan_tag(n)
     n = re.sub(r"\s+", " ", n).strip()
-    # Drop pure numeric leftovers from bad OCR
-    if n.isdigit():
+    if not n or n.isdigit() or _ONLY_CHANNEL_RE.match(n):
+        return ""
+    # Drop leftover leading "PM" / numbers
+    n = re.sub(r"^(?:PM|\d+)\s+", "", n, flags=re.I).strip()
+    if len(n) < 2 or len(n) > 32:
         return ""
     return n
 
@@ -66,8 +75,7 @@ def normalize_player_name(name: str, strip_battletag: bool = False) -> str:
         n = strip_clan_tag(name)
     if strip_battletag:
         n = _BATTLETAG_RE.sub("", n)
-    n = re.sub(r"\s+", " ", n).strip()
-    return n
+    return re.sub(r"\s+", " ", n).strip()
 
 
 def memory_key(name: str) -> str:
@@ -75,6 +83,16 @@ def memory_key(name: str) -> str:
 
 
 def short_display_name(name: str) -> str:
-    """Name used when addressing someone in chat (no time/channel junk)."""
     n = normalize_player_name(name, strip_battletag=True)
     return n or (name or "").strip()
+
+
+def is_ui_channel_label(line: str) -> bool:
+    """True if the whole line is just a channel indicator (not a player message)."""
+    s = (line or "").strip()
+    if not s:
+        return True
+    if _ONLY_CHANNEL_RE.match(s):
+        return True
+    # "[2. General]:" with empty / tiny text handled by caller
+    return False

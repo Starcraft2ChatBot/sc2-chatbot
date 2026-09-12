@@ -1,28 +1,29 @@
 from __future__ import annotations
+
 import os
 import shutil
 from pathlib import Path
 from typing import Any, Dict, Optional
+
 import yaml
-from pydantic import BaseModel, Field
 from dotenv import load_dotenv
+from pydantic import BaseModel, Field
 
 load_dotenv()
 
 
 class LLMConfig(BaseModel):
-    """Which AI to use. provider=gemini (default) or openai-compatible."""
-    provider: str = "gemini"  # gemini | openai | openai_compatible | openrouter | custom
-    api_key: str = Field(default_factory=lambda: os.getenv("LLM_API_KEY") or os.getenv("GEMINI_API_KEY", ""))
-    model: str = "gemini-2.0-flash"  # e.g. gemini-2.0-flash, gpt-4o-mini, etc.
+    provider: str = "gemini"
+    api_key: str = Field(
+        default_factory=lambda: os.getenv("LLM_API_KEY") or os.getenv("GEMINI_API_KEY", "")
+    )
+    model: str = "gemini-2.0-flash"
     temperature: float = 0.85
     max_output_tokens: int = 180
-    # Required for openai_compatible / openrouter / custom (API base URL)
     base_url: Optional[str] = None
 
 
 class GeminiConfig(BaseModel):
-    """Legacy section — still works; values merge into llm if llm is omitted."""
     api_key: str = Field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
     model: str = "gemini-2.0-flash"
     temperature: float = 0.85
@@ -34,6 +35,8 @@ class PersonalityConfig(BaseModel):
     political_mode: str = "neutral"
     response_length: str = "medium"
     emoji_intensity: int = Field(3, ge=0, le=10)
+    # 0 = never mention SC2/game; 10 = full game nerd
+    sc2_reference_level: int = Field(2, ge=0, le=10)
     topics: Dict[str, bool] = Field(default_factory=dict)
     channel_overrides: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
@@ -53,9 +56,7 @@ class Config(BaseModel):
     sc2_stub: Dict[str, Any] = Field(default_factory=dict)
 
     def resolved_llm(self) -> LLMConfig:
-        """Prefer explicit llm block; fall back to legacy gemini block."""
         if self.llm and (self.llm.api_key or self.llm.provider != "gemini"):
-            # Fill empty api_key from gemini / env
             key = self.llm.api_key or self.gemini.api_key or os.getenv("GEMINI_API_KEY", "")
             return self.llm.model_copy(update={"api_key": key})
         return LLMConfig(
@@ -69,20 +70,14 @@ class Config(BaseModel):
     @classmethod
     def load(cls, path: str | Path = "config/config.yaml") -> "Config":
         path = Path(path)
-
         if not path.exists():
             example = path.parent / "config.example.yaml"
             if example.exists():
                 path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy(example, path)
-                print(
-                    f"[config] Created {path} from {example}.\n"
-                    f"         Edit it and put your API key under llm: or gemini:."
-                )
+                print(f"[config] Created {path} from {example}.")
             else:
-                raise FileNotFoundError(
-                    f"Config not found: {path}\nAlso missing example: {example}"
-                )
+                raise FileNotFoundError(f"Config not found: {path}")
 
         with path.open(encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
@@ -95,5 +90,4 @@ class Config(BaseModel):
                 or data.get("gemini", {}).get("api_key")
                 or os.getenv("GEMINI_API_KEY", "")
             )
-
         return cls(**data)
