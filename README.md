@@ -30,11 +30,7 @@ The bot picks up messages from chat (including multi-line messages), runs them t
 - **Multi-line chat support** — long SC2 messages that wrap under the `[1. General] Name:` header are joined into one full message before being sent to the AI
 - **AI progress indicator** — Rich spinner (`AI generating reply…`) appears only while the LLM is running; canned/trigger replies stay silent
 - **Multi-provider LLM** — Gemini by default; also OpenAI / OpenRouter / any OpenAI-compatible endpoint (including free models from [build.nvidia.com](https://build.nvidia.com/models))
-- **Rich personality controls**
-  - Aggressiveness 1–10
-  - Political modes: `neutral` | `left` | `right` | `propaganda_left` | `propaganda_right`
-  - Response length: `short` | `medium` | `long`
-  - Emoji intensity, SC2 reference level (0 = never mention the game), topic toggles
+- **Rich personality controls** — aggressiveness, 7 reply modes (political + pure troll/ragebait), length, emoji, SC2 reference level, topic toggles
 - **Trigger / canned-response engine** — regex patterns, priority, cooldowns, per-player limits, channel filters
 - **Per-player conversation memory** (default 30 messages) with optional disk persistence
 - **Clan-tag stripping** — `[LG]Serral` → `Serral` for stable memory, mute, and owner keys
@@ -75,21 +71,112 @@ Switch by editing `config/config.yaml` → `chat_backend`, then restart.
 
 ---
 
+## Personality modes
+
+The bot’s voice is controlled by `personality.political_mode` in config (the field name is historical — it also covers non-political modes).
+
+### All modes
+
+| Mode | Type | Behaviour |
+|------|------|-----------|
+| `neutral` | Neutral | Light sarcasm OK. No left/right talking points. |
+| `left` | Political | Soft left lean when it fits (inequality, labor, climate, critique of the right). Chat-length, not a lecture. |
+| `right` | Political | Soft right lean when it fits (free speech, borders, personal responsibility, critique of the left). Chat-length. |
+| `propaganda_left` | Political (hard) | Hostile left propaganda: push progressive takes, attack the right, culture-war framing. Mean and punchy. |
+| `propaganda_right` | Political (hard) | Hostile right propaganda: push conservative takes, attack the left, culture-war framing. Mean and punchy. |
+| `troll` | **Non-political** | Classic internet troll. Provoke, mock, bad-faith questions, sarcasm. **No politics, no news lectures.** |
+| `ragebait` | **Non-political** | Maximize annoyance: dismiss, twist their words, act superior, bait arguments. **No politics.** |
+
+### Example reactions
+
+**They say:** `gg ez`
+
+| Mode | Example reply |
+|------|----------------|
+| `troll` | `bro typed gg ez with 200 apm and still lost` |
+| `ragebait` | `projecting already? cute` |
+
+**They say:** `why you so toxic`
+
+| Mode | Example reply |
+|------|----------------|
+| `troll` | `because you keep typing and i keep winning the argument` |
+| `ragebait` | `you’re the one still talking` |
+
+**Rough difference:** `troll` is a clown who wants a reaction; `ragebait` is colder and frames *them* as the problem. Political modes push ideology instead of pure mockery.
+
+Actual wording varies with the LLM, aggressiveness, memory, and length settings.
+
+### Other personality knobs
+
+| Setting | Range / values | Effect |
+|---------|----------------|--------|
+| `aggressiveness` | `1`–`10` | 1 = friendly, 5 = normal trash-talk, 10 = max toxic |
+| `response_length` | `short` / `medium` / `long` | Word-count guidance for the model |
+| `emoji_intensity` | `0`–`10` | 0 = none, 10 = emoji spam |
+| `sc2_reference_level` | `0`–`10` | 0 = never mention SC2/game; 10 = full game talk |
+| `topics` | booleans | Toggle politics, current_events, in_game_strategy, memes, personal |
+
+In `troll` / `ragebait`, politics and current-events topic flags are overridden so the bot stays non-political.
+
+### Edit in config
+
+`config/config.yaml`:
+
+```yaml
+personality:
+  aggressiveness: 8
+  political_mode: "troll"    # neutral|left|right|propaganda_left|propaganda_right|troll|ragebait
+  response_length: "medium"  # short|medium|long
+  emoji_intensity: 0
+  sc2_reference_level: 0
+  topics:
+    politics: true
+    current_events: true
+    in_game_strategy: false
+    memes: false
+    personal: true
+```
+
+Restart the bot after editing config, **or** use `!reload` in chat if you only changed values that reload supports (personality fields are reloaded).
+
+### Change live with owner commands
+
+| Command | Example | Effect |
+|---------|---------|--------|
+| `!prop` / `!political` / `!mode` | `!prop troll` | Set mode (`troll`, `ragebait`, `neutral`, `left`, …) |
+| `!tone` / `!aggro` | `!tone 9` | Aggressiveness 1–10 |
+| `!length` | `!length short` | `short` / `medium` / `long` |
+| `!status` | `!status` | Show current aggro, mode, mute count |
+
+Examples:
+
+```text
+!prop ragebait
+!tone 9
+!length short
+!status
+```
+
+---
+
 ## Owner commands
 
-Only names listed under `owner.names` in config can use these. Default prefix is `!`.
+Only names listed under `owner.names` (and `sc2_stub.self_name`) can use these. Default prefix is `!`.
 
 | Command | Example | Effect |
 |---------|---------|--------|
 | `!tone` / `!aggro` | `!tone 7` | Set aggressiveness 1–10 |
-| `!prop` / `!political` | `!prop propaganda_left` | Set political mode |
+| `!prop` / `!political` / `!mode` | `!prop troll` | Set personality mode (see table above) |
 | `!mute` | `!mute PlayerName` | Mute a player |
 | `!unmute` | `!unmute PlayerName` | Unmute a player |
 | `!length` | `!length short` | Set reply length (`short` / `medium` / `long`) |
-| `!status` | `!status` | Show current aggro, political mode, mute count |
+| `!status` | `!status` | Show current aggro, mode, mute count |
 | `!reload` | `!reload` | Reload config (personality, triggers, etc.) |
 
 Clan tags are ignored for matching, so `!mute [LG]Bob` and `!mute Bob` are the same.
+
+Put your in-game name in **both** `owner.names` and `sc2_stub.self_name` so in-game commands are recognized.
 
 ---
 
@@ -238,7 +325,7 @@ The NVIDIA path uses the OpenAI-compatible client, which is optional in `require
 
 ```powershell
 # From the project root, with the venv activated
-.\ .venv\Scripts\Activate.ps1
+.\.venv\Scripts\Activate.ps1
 pip install openai>=1.0.0
 ```
 
@@ -278,7 +365,7 @@ All settings live in `config/config.yaml`:
 |---------|---------|
 | `llm` / `gemini` | Provider, model, API key, temperature, max tokens |
 | `owner` | Owner names + command prefix |
-| `personality` | Aggressiveness, political mode, length, emoji, SC2 ref level, topics |
+| `personality` | Aggressiveness, mode (`troll` / political / …), length, emoji, SC2 ref level, topics |
 | `behaviour` | Reply delays, probability, typos, game-request handling, address-by-name |
 | `anti_spam` | Cooldowns, rate limits, mute list |
 | `memory` | Per-player history size + optional persistence path |
