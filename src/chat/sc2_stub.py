@@ -350,36 +350,66 @@ class SC2StubBackend(ChatBackend):
         return f"{p}|{t}"
 
     def _parse_messages(self, raw: str) -> List[ParsedLine]:
+        """Parse OCR text into messages, joining multi-line chat continuations.
+
+        SC2 chat shows long messages as:
+          [1. General] PlayerName: first line of text
+          second line of text
+          third line...
+        until the next [n. Channel] Name: header appears.
+
+        The previous implementation only kept the header line and discarded
+        every continuation, so the AI only ever saw the first line.
+        """
         results: List[ParsedLine] = []
         lines = [l.strip() for l in raw.splitlines() if l.strip()]
-        pattern = re.compile(r"^(?P<head>.*?)\s*:\s*(?P<text>.+)$")
+        # Allow empty text after the colon (header-only line + continuations below).
+        pattern = re.compile(r"^(?P<head>.*?)\s*:\s*(?P<text>.*)$")
+
+        current: Optional[List] = None  # [player, text, channel, tab, tab_idx]
+
+        def flush() -> None:
+            nonlocal current
+            if current is None:
+                return
+            player_c, text_c, channel_c, tab_c, tab_idx_c = current
+            text_c = (text_c or "").strip()
+            if text_c and not is_ui_channel_label(text_c):
+                fp = self._fingerprint(player_c, text_c)
+                results.append((player_c, text_c, channel_c, tab_c, tab_idx_c, fp))
+            current = None
 
         for line in lines:
             if is_ui_channel_label(line):
                 continue
             m = pattern.match(line)
-            if not m:
-                continue
-            head = m.group("head").strip()
-            text = m.group("text").strip()
-            if not text or is_ui_channel_label(text):
-                continue
+            if m:
+                head = m.group("head").strip()
+                text = m.group("text").strip()
+                player = clean_ocr_player_name(head)
+                if player:
+                    # Valid new message header → close previous message and start new one
+                    flush()
+                    tab, tab_idx = self._extract_tab(head)
+                    head_l = head.lower()
+                    if "team" in head_l:
+                        channel = Channel.TEAM
+                    elif "whisper" in head_l or re.search(r"\bpm\b", head_l):
+                        channel = Channel.WHISPER
+                    else:
+                        channel = Channel.ALL
+                    current = [player, text, channel, tab, tab_idx]
+                    continue
+                # Matched "something: text" but clean_ocr_player_name found no
+                # valid player → treat the whole line as a continuation.
+            # Continuation line (no header match, or invalid header)
+            if current is not None:
+                if current[1]:
+                    current[1] = f"{current[1]} {line}".strip()
+                else:
+                    current[1] = line
 
-            player = clean_ocr_player_name(head)
-            if not player:
-                continue
-
-            tab, tab_idx = self._extract_tab(head)
-            head_l = head.lower()
-            if "team" in head_l:
-                channel = Channel.TEAM
-            elif "whisper" in head_l or re.search(r"\bpm\b", head_l):
-                channel = Channel.WHISPER
-            else:
-                channel = Channel.ALL
-
-            fp = self._fingerprint(player, text)
-            results.append((player, text, channel, tab, tab_idx, fp))
+        flush()
         return results
 
     async def _poll_once(self) -> list[ChatMessage]:
