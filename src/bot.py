@@ -118,6 +118,8 @@ class SC2ChatBot:
         self.personality_state["emoji_intensity"] = p.emoji_intensity
         self.personality_state["sc2_reference_level"] = getattr(p, "sc2_reference_level", 2)
         self.personality_state["topics"] = dict(p.topics)
+        # Keep command owner list in sync after reload
+        self.commands.reload_owners(self.config)
         if self.config.chat_backend != old_backend:
             self.logger.warning("chat_backend changed — full restart required")
         else:
@@ -143,18 +145,23 @@ class SC2ChatBot:
         await asyncio.sleep(random.uniform(lo, hi))
 
     async def _process_message(self, msg: ChatMessage) -> None:
-        if memory_key(msg.player) in {memory_key(n) for n in self.self_names}:
-            self.logger.debug("Skip own message from %s", msg.player)
-            return
+        is_self = memory_key(msg.player) in {memory_key(n) for n in self.self_names}
 
-        self.logger.info("RECV %s", msg)
-
+        # Owner commands must run even when the speaker is the bot's own account
+        # (previously self messages were skipped before commands.handle ran).
         cmd_reply = self.commands.handle(msg)
         if cmd_reply:
+            self.logger.info("RECV %s", msg)
             await self._human_delay(directed=True)
             await self._send(cmd_reply, msg)
             self.logger.info("CMD  → %s", cmd_reply)
             return
+
+        if is_self:
+            self.logger.debug("Skip own message from %s", msg.player)
+            return
+
+        self.logger.info("RECV %s", msg)
 
         reply = self.engine.decide_and_generate(msg)
         if reply:
