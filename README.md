@@ -1,6 +1,9 @@
 # Console Messages
 <img width="845" height="720" alt="image" src="https://github.com/user-attachments/assets/5fa59b94-c6bb-49ff-8e62-ca2e132bb43d" />
 
+# Automatic AI Responses
+<img width="800" height="67" alt="20260912-2112-58 9570375-ezgif com-video-to-gif-converter" src="https://github.com/user-attachments/assets/a7f5b6c1-4770-40b1-9224-50a225f55b82" />
+
 # SC2 Chat-Only Bot (AI-powered) | Multiple AI Support Available
 
 **Educational / research project only.**
