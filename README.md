@@ -1,3 +1,4 @@
+# Console Messages
 <img width="845" height="720" alt="image" src="https://github.com/user-attachments/assets/5fa59b94-c6bb-49ff-8e62-ca2e132bb43d" />
 
 # SC2 Chat-Only Bot (Gemini-powered) | Multiple AI Support Available
