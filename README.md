@@ -204,12 +204,69 @@ behaviour:
 ## API keys
 
 ### Gemini
-1. https://aistudio.google.com/
+1. Go to https://aistudio.google.com/
 2. Create an API key
 3. Put it in `config/config.yaml` (`llm.api_key` or `gemini.api_key`) or set `GEMINI_API_KEY`
 
-### Other providers
-Set `llm.provider` to `openai`, `openai_compatible`, `openrouter`, or `custom`, and supply `api_key`, `model`, and optionally `base_url`. Free models from NVIDIA and similar hosts work via the OpenAI-compatible path.
+### NVIDIA models (build.nvidia.com)
+
+[build.nvidia.com/models](https://build.nvidia.com/models) hosts many free / freemium LLMs (Llama, Nemotron, DeepSeek, Mixtral, Gemma, etc.) behind an **OpenAI-compatible** API.
+
+**How it works with this bot**
+
+1. You pick a model on the site and get an NVIDIA API key.
+2. The bot’s `LLMClient` talks to NVIDIA’s hosted endpoint using the standard OpenAI chat-completions protocol (`base_url` + `api_key` + `model`).
+3. No special NVIDIA SDK is required beyond the optional `openai` Python package.
+
+**Endpoint used by the bot**
+
+| Setting | Value |
+|---------|--------|
+| Base URL | `https://integrate.api.nvidia.com/v1` |
+| Auth | Bearer token = your NVIDIA API key |
+| Protocol | OpenAI Chat Completions (`/v1/chat/completions`) |
+
+**Get an API key**
+
+1. Open https://build.nvidia.com/models and sign in (NVIDIA account).
+2. Click your profile → **API Keys** (or the key prompt on a model page).
+3. Generate a key and copy it (you won’t see it again).
+
+**Install the dependency (PowerShell)**
+
+The NVIDIA path uses the OpenAI-compatible client, which is optional in `requirements.txt`. Install it in your venv:
+
+```powershell
+# From the project root, with the venv activated
+.\ .venv\Scripts\Activate.ps1
+pip install openai>=1.0.0
+```
+
+Or install everything needed for OpenAI-compatible providers in one go:
+
+```powershell
+pip install openai>=1.0.0
+```
+
+**Configure `config/config.yaml`**
+
+```yaml
+llm:
+  provider: "openai_compatible"   # or openai / custom / openrouter
+  api_key: "nvapi-YOUR_KEY_HERE"
+  model: "meta/llama-3.3-70b-instruct"   # any id from build.nvidia.com/models
+  base_url: "https://integrate.api.nvidia.com/v1"
+  temperature: 0.9
+  max_output_tokens: 120
+```
+
+Model IDs are the full names shown on the site (e.g. `meta/llama-3.3-70b-instruct`, `nvidia/llama-3.1-nemotron-70b-instruct`, `mistralai/mixtral-8x22b-instruct-v0.1`). Check the model card for the exact string and rate limits / free tier details.
+
+Restart the bot after changing the config. The console will log something like `LLM provider=openai_compatible model=… base_url=https://integrate.api.nvidia.com/v1`.
+
+### Other OpenAI-compatible providers
+
+Set `llm.provider` to `openai`, `openai_compatible`, `openrouter`, or `custom`, and supply `api_key`, `model`, and optionally `base_url`. Same `openai` package as above.
 
 ---
 
