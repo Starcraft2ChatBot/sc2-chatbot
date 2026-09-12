@@ -53,7 +53,6 @@ try:
 except ImportError:
     pass
 
-# Only match real channel labels — avoids tab=756 from OCR garbage
 _TAB_RE = re.compile(
     r"[\[\|]?\s*(\d{1,2})\s*[.\:,]?\s*"
     r"(General|Arcade|Co-?op(?:\s*Missions)?|All|Team|Whisper|Chat|PM)"
@@ -85,9 +84,7 @@ class SC2StubBackend(ChatBackend):
         self.window_title_substring = self.cfg.get("window_title", "StarCraft II")
         self.input_method = str(self.cfg.get("input_method", "paste")).lower()
         self.max_chat_tabs = int(self.cfg.get("max_chat_tabs", 8))
-        # Default OFF — Tab switching is unreliable without reading the active tab UI
         self.switch_channels = bool(self.cfg.get("switch_channels", False))
-        # After opening chat, assume SC2 starts on this tab index, then Tab (target-1) times
         self.assume_chat_opens_on_tab = int(self.cfg.get("assume_chat_opens_on_tab", 1))
 
         self.ocr_enabled = bool(self.cfg.get("ocr_enabled", False))
@@ -98,8 +95,9 @@ class SC2StubBackend(ChatBackend):
         self._poll_count = 0
 
         self._connected = False
+        # Long-term dedup (exact + fuzzy) — never removed as a feature
         self._seen: Set[str] = set()
-        self._seen_order: Deque[str] = deque(maxlen=800)
+        self._seen_order: Deque[str] = deque(maxlen=1000)
         self._prev_frame_fps: Set[str] = set()
         self._recent_sends: Deque[str] = deque(maxlen=40)
         self._history_seeded = False
@@ -138,13 +136,40 @@ class SC2StubBackend(ChatBackend):
         return False
 
     def _remember_fp(self, fp: str) -> None:
-        if fp in self._seen:
+        if not fp or fp in self._seen:
             return
         self._seen.add(fp)
         self._seen_order.append(fp)
-        while len(self._seen) > 800 and self._seen_order:
+        while len(self._seen) > 1000 and self._seen_order:
             old = self._seen_order.popleft()
             self._seen.discard(old)
+
+    def _norm_text(self, text: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", (text or "").lower())
+
+    def _already_seen(self, player: str, text: str, fp: str) -> bool:
+        """Exact fingerprint or fuzzy match (OCR noise on the same line)."""
+        if fp in self._seen:
+            return True
+        p = memory_key(player)
+        t = self._norm_text(text)
+        if len(t) < 4:
+            return fp in self._seen
+        prefix = p + "|"
+        for old in self._seen:
+            if not old.startswith(prefix):
+                continue
+            ot = old[len(prefix) :]
+            if not ot:
+                continue
+            if t == ot:
+                return True
+            # Same line with OCR glitch / partial read
+            if len(t) >= 10 and len(ot) >= 10 and (t in ot or ot in t):
+                return True
+            if len(t) >= 12 and len(ot) >= 12 and t[:12] == ot[:12]:
+                return True
+        return False
 
     async def connect(self) -> None:
         self._connected = True
@@ -211,7 +236,6 @@ class SC2StubBackend(ChatBackend):
             time.sleep(delay * random.uniform(0.7, 1.2))
 
     def _switch_to_tab_absolute(self, target_index: int) -> None:
-        """After chat is open, Tab (target - assume_opens_on) times. No relative drift."""
         if not self.switch_channels:
             return
         if not target_index or target_index < 1 or target_index > self.max_chat_tabs:
@@ -219,7 +243,7 @@ class SC2StubBackend(ChatBackend):
         origin = max(1, self.assume_chat_opens_on_tab)
         steps = target_index - origin
         if steps < 0:
-            steps = target_index  # best-effort wrap forward
+            steps = target_index
         if steps == 0:
             return
         logger.info(
@@ -311,7 +335,6 @@ class SC2StubBackend(ChatBackend):
         matches = list(_TAB_RE.finditer(head or ""))
         if not matches:
             return "", 0
-        # Prefer the last real channel tag in the head (after doubled OCR junk)
         m = matches[-1]
         try:
             idx = int(m.group(1))
@@ -319,12 +342,11 @@ class SC2StubBackend(ChatBackend):
             return "", 0
         if idx < 1 or idx > self.max_chat_tabs:
             return "", 0
-        label = f"{idx}. {m.group(2).strip()}"
-        return label, idx
+        return f"{idx}. {m.group(2).strip()}", idx
 
     def _fingerprint(self, player: str, text: str) -> str:
         p = memory_key(player)
-        t = re.sub(r"[^a-z0-9]+", "", (text or "").lower())[:70]
+        t = self._norm_text(text)[:70]
         return f"{p}|{t}"
 
     def _parse_messages(self, raw: str) -> List[ParsedLine]:
@@ -384,26 +406,38 @@ class SC2StubBackend(ChatBackend):
 
         curr_fps = {fp for *_, fp in parsed}
 
+        # --- Keep history seed (NOT removed) ---
+        # First successful OCR: remember everything on screen, emit nothing.
         if not self._history_seeded:
             for *_, fp in parsed:
                 self._remember_fp(fp)
-            self._prev_frame_fps = curr_fps
+            self._prev_frame_fps = set(curr_fps)
             self._history_seeded = True
-            logger.info("Seeded %d chat lines — only NEW lines after this are logged", len(parsed))
+            logger.info(
+                "Seeded %d existing chat lines (dedup active). "
+                "Only messages that appear AFTER this will be RECV/logged.",
+                len(parsed),
+            )
             return []
 
+        # Lines not present on the previous frame (helps spot truly new text)
         appeared = curr_fps - self._prev_frame_fps
-        self._prev_frame_fps = curr_fps
-        if not appeared:
-            return []
+        self._prev_frame_fps = set(curr_fps)
 
         new_msgs: list[ChatMessage] = []
         for player, text, channel, tab, tab_idx, fp in reversed(parsed):
-            if fp not in appeared or fp in self._seen:
+            # Primary anti-repeat: long-term seen (exact + fuzzy)
+            if self._already_seen(player, text, fp):
+                self._remember_fp(fp)
+                continue
+            # Prefer lines that are new vs last frame (OCR flicker still blocked by _already_seen)
+            if appeared and fp not in appeared:
+                self._remember_fp(fp)
                 continue
             if self._is_self(player) or self._is_echo_of_own_send(text):
                 self._remember_fp(fp)
                 continue
+
             self._remember_fp(fp)
             clean = short_display_name(player) or player
             msg = ChatMessage.from_parts(
@@ -417,6 +451,11 @@ class SC2StubBackend(ChatBackend):
             )
             object.__setattr__(msg, "display_name", clean)
             new_msgs.append(msg)
+
+        # Always mark every currently visible line as seen so OCR noise
+        # cannot re-fire the same chat later under a slightly different string.
+        for *_, fp in parsed:
+            self._remember_fp(fp)
 
         new_msgs.reverse()
         return new_msgs
