@@ -22,7 +22,8 @@ owner:
 # ====================== PERSONALITY ======================
 personality:
   aggressiveness: 8                       # 1–10
-  political_mode: "propaganda_left"       # neutral|left|right|propaganda_left|propaganda_right
+  # Modes: neutral|left|right|propaganda_left|propaganda_right|troll|ragebait
+  political_mode: "troll"
   response_length: "medium"
   emoji_intensity: 0
   sc2_reference_level: 0                  # 0 = never mention SC2/game; 10 = full game talk
