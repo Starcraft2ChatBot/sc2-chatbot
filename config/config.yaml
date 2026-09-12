@@ -1,125 +1,80 @@
 # ====================== AI / LLM ======================
-# Primary AI settings (preferred over legacy gemini: block below)
 llm:
-  provider: "gemini"                      # gemini | openai | openai_compatible | openrouter | custom
-  api_key: "YOUR_API_KEY"                 # or set LLM_API_KEY / GEMINI_API_KEY env var
-  model: "gemini-2.0-flash"               # any model id your provider supports
-  temperature: 0.85
-  max_output_tokens: 180
-  base_url: null                          # for openrouter / local OpenAI-compatible APIs
-  # base_url: "https://openrouter.ai/api/v1"
-  # base_url: "http://127.0.0.1:1234/v1"
+  provider: "gemini"
+  api_key: "YOUR_API_KEY"
+  model: "gemini-2.0-flash"
+  temperature: 0.9
+  max_output_tokens: 120
+  base_url: null
 
-# Legacy Gemini block (still works if llm is omitted or api_key is only here)
 gemini:
   api_key: ""
   model: "gemini-2.0-flash"
-  temperature: 0.85
-  max_output_tokens: 180
+  temperature: 0.9
+  max_output_tokens: 120
 
 owner:
-  names:                                  # case-insensitive
+  names:
     - "YourBattleTag"
     - "YourInGameName"
   command_prefix: "!"
 
-# ====================== PERSONALITY ======================
 personality:
-  aggressiveness: 5                       # 1 = friendly, 10 = toxic
-  political_mode: "neutral"               # neutral | left | right | propaganda_left | propaganda_right
-  response_length: "medium"               # short | medium | long
-  emoji_intensity: 3                      # 0–10
+  aggressiveness: 8
+  political_mode: "propaganda_left"
+  response_length: "medium"
+  emoji_intensity: 0
+  sc2_reference_level: 0                  # 0 = no SC2 references; 10 = full game talk
   topics:
     politics: true
     current_events: true
-    in_game_strategy: true
-    memes: true
-    personal: false
-  channel_overrides:
-    all:
-      aggressiveness: 6
-    team:
-      aggressiveness: 3
-    whisper:
-      aggressiveness: 4
+    in_game_strategy: false
+    memes: false
+    personal: true
 
-# ====================== BEHAVIOUR ======================
 behaviour:
-  min_reply_delay_sec: 1.2
-  max_reply_delay_sec: 7.5
-  typo_chance: 0.05
-  reply_probability: 0.9                  # higher = replies more often
+  min_reply_delay_sec: 0.35
+  max_reply_delay_sec: 0.8
+  typo_chance: 0.0
+  reply_probability: 1.0
   ignore_self: true
   ignore_system: true
-  reply_to_game_requests: true
-  game_request_use_canned: false          # false = AI handles [1v1]/host]/lfg etc.
-  address_by_name: true                   # "PlayerName, message…"
+  reply_to_game_requests: false
+  game_request_use_canned: false
+  address_by_name: true
   name_separator: ", "
 
 anti_spam:
-  global_cooldown_sec: 8
-  per_player_cooldown_sec: 25
-  max_replies_per_player_per_minute: 3
+  global_cooldown_sec: 1
+  per_player_cooldown_sec: 3
+  max_replies_per_player_per_minute: 8
   mute_list: []
-  rate_limit_window_sec: 60
 
 memory:
   max_messages_per_player: 30
-  max_total_context_tokens: 2500
   persist_path: "logs/memory.json"
 
-# ====================== TRIGGERS / CANNED ======================
-triggers:
-  - name: "gg"
-    patterns:
-      - "(?i)\\bgg\\b"
-      - "(?i)\\bgood\\s*game\\b"
-    response: "gg wp"
-    priority: 100
-    cooldown_sec: 15
-    channels: ["all", "team"]
+triggers: []
+canned_blocks: []
 
-  - name: "glhf"
-    patterns:
-      - "(?i)\\bgl\\s*hf\\b"
-      - "(?i)\\bgood\\s*luck\\b"
-    response: "gl hf, may the better micro win"
-    priority: 90
-    cooldown_sec: 30
-
-canned_blocks:
-  - id: "long_rant"
-    text: |
-      Honestly the balance team has no idea what they're doing.
-      This patch is a joke.
-    triggers: ["(?i)balance", "(?i)this patch"]
-
-# ====================== LOGGING ======================
 logging:
   level: "INFO"
   file: "logs/sc2_chatbot.log"
-  max_bytes: 10485760
-  backup_count: 5
   console: true
 
-# ====================== CHAT BACKEND ======================
-# "simulated"  = safe testing
-# "sc2_stub"   = live OCR + keyboard (HIGH ToS RISK)
 chat_backend: "simulated"
 
 sc2_stub:
   window_title: "StarCraft II"
   chat_key: "enter"
   send_key: "enter"
-  typing_speed_cps: 11
-  input_method: "paste"                   # paste = full message then Enter (fixes early send)
-
+  input_method: "paste"
   ocr_enabled: false
-  poll_interval_sec: 1.8
-
-  # [left, top, width, height] — measure with tools/measure_chat_region.py
+  poll_interval_sec: 0.45
   chat_region: null
-
-  # Use forward slashes on Windows to avoid YAML escape issues
   tesseract_cmd: null
-  # tesseract_cmd: "C:/Program Files/Tesseract-OCR/tesseract.exe"
+  switch_channels: false
+  channel_switch_key: "tab"
+  assume_chat_opens_on_tab: 1
+  max_chat_tabs: 8
+  self_name: "YourInGameName"

@@ -1,25 +1,17 @@
 # ====================== AI / LLM ======================
-# Prefer this block. You can still use the legacy "gemini:" section alone.
 llm:
-  provider: "gemini"                      # gemini | openai | openai_compatible | openrouter | custom
-  api_key: "YOUR_API_KEY"                 # or LLM_API_KEY / GEMINI_API_KEY env
-  model: "gemini-2.0-flash"               # set any model id your provider supports
-  # Examples:
-  #   model: "gemini-2.0-flash"
-  #   model: "gemini-2.5-flash"
-  #   model: "gpt-4o-mini"                # with provider openai / openrouter
-  temperature: 0.85
-  max_output_tokens: 180
-  base_url: null                          # set for openrouter / custom OpenAI-compatible APIs
-  # base_url: "https://openrouter.ai/api/v1"
-  # base_url: "http://127.0.0.1:1234/v1"  # local LM Studio / etc.
+  provider: "gemini"
+  api_key: "YOUR_API_KEY"
+  model: "gemini-2.0-flash"
+  temperature: 0.9
+  max_output_tokens: 120
+  base_url: null
 
-# Legacy (still works if llm is omitted)
 gemini:
   api_key: ""
   model: "gemini-2.0-flash"
-  temperature: 0.85
-  max_output_tokens: 180
+  temperature: 0.9
+  max_output_tokens: 120
 
 owner:
   names:
@@ -27,56 +19,48 @@ owner:
     - "YourInGameName"
   command_prefix: "!"
 
+# ====================== PERSONALITY ======================
 personality:
-  aggressiveness: 5
-  political_mode: "neutral"
+  aggressiveness: 8                       # 1–10
+  political_mode: "propaganda_left"       # neutral|left|right|propaganda_left|propaganda_right
   response_length: "medium"
-  emoji_intensity: 3
+  emoji_intensity: 0
+  sc2_reference_level: 0                  # 0 = never mention SC2/game; 10 = full game talk
   topics:
     politics: true
     current_events: true
-    in_game_strategy: true
-    memes: true
-    personal: false
+    in_game_strategy: false
+    memes: false
+    personal: true
 
 behaviour:
-  min_reply_delay_sec: 1.2
-  max_reply_delay_sec: 7.5
-  typo_chance: 0.05
-  reply_probability: 0.9                  # higher = more conversational coverage
+  min_reply_delay_sec: 0.35
+  max_reply_delay_sec: 0.8
+  typo_chance: 0.0
+  reply_probability: 1.0
   ignore_self: true
   ignore_system: true
-  reply_to_game_requests: true
-  game_request_use_canned: false          # false = use AI for [1v1] etc. (better conversations)
-  address_by_name: true                   # "PlayerName, message…"
+  reply_to_game_requests: false
+  game_request_use_canned: false
+  address_by_name: true
   name_separator: ", "
 
 anti_spam:
-  global_cooldown_sec: 8
-  per_player_cooldown_sec: 25
-  max_replies_per_player_per_minute: 3
+  global_cooldown_sec: 1
+  per_player_cooldown_sec: 3
+  max_replies_per_player_per_minute: 8
   mute_list: []
 
 memory:
   max_messages_per_player: 30
   persist_path: "logs/memory.json"
 
-triggers:
-  - name: "gg"
-    patterns:
-      - "(?i)\\bgg\\b"
-    response: "gg wp"
-    priority: 100
-    cooldown_sec: 15
-    channels: ["all", "team"]
-
+triggers: []
 canned_blocks: []
 
 logging:
   level: "INFO"
   file: "logs/sc2_chatbot.log"
-  max_bytes: 10485760
-  backup_count: 5
   console: true
 
 chat_backend: "simulated"
@@ -85,10 +69,14 @@ sc2_stub:
   window_title: "StarCraft II"
   chat_key: "enter"
   send_key: "enter"
-  typing_speed_cps: 11
-  input_method: "paste"                   # paste = full message then Enter (fixes early send)
+  input_method: "paste"
   ocr_enabled: false
-  poll_interval_sec: 1.8
+  poll_interval_sec: 0.45
   chat_region: null
   tesseract_cmd: null
-  # tesseract_cmd: "C:/Program Files/Tesseract-OCR/tesseract.exe"
+  # Chat tab switching (unreliable — default OFF)
+  switch_channels: false
+  channel_switch_key: "tab"
+  assume_chat_opens_on_tab: 1
+  max_chat_tabs: 8
+  self_name: "YourInGameName"

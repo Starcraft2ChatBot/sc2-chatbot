@@ -12,7 +12,7 @@ from collections import deque
 from typing import AsyncIterator, Deque, Iterable, List, Optional, Set, Tuple
 
 from ..models import Channel, ChatMessage
-from ..names import clean_ocr_player_name, memory_key, short_display_name
+from ..names import clean_ocr_player_name, is_ui_channel_label, memory_key, short_display_name
 from .base import ChatBackend
 
 logger = logging.getLogger("sc2_chatbot.sc2_stub")
@@ -53,12 +53,15 @@ try:
 except ImportError:
     pass
 
+# Only match real channel labels — avoids tab=756 from OCR garbage
 _TAB_RE = re.compile(
-    r"[\[\|]?\s*(\d+)\s*[\.,]?\s*([A-Za-z][^\]\|]*)[\]\|]?",
+    r"[\[\|]?\s*(\d{1,2})\s*[.\:,]?\s*"
+    r"(General|Arcade|Co-?op(?:\s*Missions)?|All|Team|Whisper|Chat|PM)"
+    r"[\]\|]?",
     re.IGNORECASE,
 )
 
-ParsedLine = Tuple[str, str, Channel, str, int, str]  # player, text, ch, tab, idx, fp
+ParsedLine = Tuple[str, str, Channel, str, int, str]
 
 
 class SC2StubBackend(ChatBackend):
@@ -82,26 +85,24 @@ class SC2StubBackend(ChatBackend):
         self.window_title_substring = self.cfg.get("window_title", "StarCraft II")
         self.input_method = str(self.cfg.get("input_method", "paste")).lower()
         self.max_chat_tabs = int(self.cfg.get("max_chat_tabs", 8))
-        self.switch_channels = bool(self.cfg.get("switch_channels", True))
+        # Default OFF — Tab switching is unreliable without reading the active tab UI
+        self.switch_channels = bool(self.cfg.get("switch_channels", False))
+        # After opening chat, assume SC2 starts on this tab index, then Tab (target-1) times
+        self.assume_chat_opens_on_tab = int(self.cfg.get("assume_chat_opens_on_tab", 1))
 
         self.ocr_enabled = bool(self.cfg.get("ocr_enabled", False))
-        # Never allow 0 — burns CPU and destabilizes OCR
-        self.poll_interval = max(0.25, float(self.cfg.get("poll_interval_sec", 0.5) or 0.5))
+        self.poll_interval = max(0.25, float(self.cfg.get("poll_interval_sec", 0.45) or 0.45))
         self.chat_region = self.cfg.get("chat_region")
         self.tesseract_cmd = self.cfg.get("tesseract_cmd")
         self._debug_every = int(self.cfg.get("ocr_debug_every_n_polls", 15))
         self._poll_count = 0
 
         self._connected = False
-        # Long-term: never re-emit the same logical line
         self._seen: Set[str] = set()
         self._seen_order: Deque[str] = deque(maxlen=800)
-        # Previous OCR frame fingerprints (for “appeared this frame” detection)
         self._prev_frame_fps: Set[str] = set()
         self._recent_sends: Deque[str] = deque(maxlen=40)
-        self._last_ocr_text = ""
         self._history_seeded = False
-        self._current_tab_index = 1
         self._lock = asyncio.Lock()
 
         if self.tesseract_cmd and HAS_TESSERACT:
@@ -132,9 +133,7 @@ class SC2StubBackend(ChatBackend):
             return False
         for sent in self._recent_sends:
             s = re.sub(r"[^a-z0-9]+", "", (sent or "").lower())
-            if not s:
-                continue
-            if t == s or (len(t) > 12 and (t in s or s in t)):
+            if s and (t == s or (len(t) > 12 and (t in s or s in t))):
                 return True
         return False
 
@@ -150,10 +149,10 @@ class SC2StubBackend(ChatBackend):
     async def connect(self) -> None:
         self._connected = True
         logger.info(
-            "SC2StubBackend connected (OCR=%s, poll=%.2fs, ignore=%s)",
+            "SC2StubBackend connected (OCR=%s, poll=%.2fs, switch_channels=%s)",
             self.ocr_enabled,
             self.poll_interval,
-            sorted(self._self_keys),
+            self.switch_channels,
         )
 
     async def disconnect(self) -> None:
@@ -166,8 +165,7 @@ class SC2StubBackend(ChatBackend):
         if not HAS_PYAUTOGUI:
             return None
         try:
-            windows = gw.getWindowsWithTitle(self.window_title_substring)
-            for w in windows:
+            for w in gw.getWindowsWithTitle(self.window_title_substring):
                 if w.visible and not w.isMinimized:
                     return w
         except Exception as e:
@@ -179,7 +177,7 @@ class SC2StubBackend(ChatBackend):
             if window.isMinimized:
                 window.restore()
             window.activate()
-            time.sleep(0.25)
+            time.sleep(0.2)
             return True
         except Exception as e:
             logger.warning("Could not focus SC2 window: %s", e)
@@ -193,9 +191,9 @@ class SC2StubBackend(ChatBackend):
             except Exception:
                 old = None
             pyperclip.copy(text)
-            time.sleep(0.05)
+            time.sleep(0.04)
             pyautogui.hotkey("ctrl", "v")
-            time.sleep(0.1)
+            time.sleep(0.08)
         finally:
             if old is not None:
                 try:
@@ -212,23 +210,28 @@ class SC2StubBackend(ChatBackend):
             pyautogui.write(char, interval=0)
             time.sleep(delay * random.uniform(0.7, 1.2))
 
-    def _switch_to_tab(self, target_index: int) -> None:
-        if not target_index or target_index < 1:
+    def _switch_to_tab_absolute(self, target_index: int) -> None:
+        """After chat is open, Tab (target - assume_opens_on) times. No relative drift."""
+        if not self.switch_channels:
             return
-        if target_index == self._current_tab_index or not self.switch_channels:
+        if not target_index or target_index < 1 or target_index > self.max_chat_tabs:
             return
-        steps = (target_index - self._current_tab_index) % max(self.max_chat_tabs, 2)
+        origin = max(1, self.assume_chat_opens_on_tab)
+        steps = target_index - origin
+        if steps < 0:
+            steps = target_index  # best-effort wrap forward
+        if steps == 0:
+            return
         logger.info(
-            "Switching chat tab %s → %s (%s x %s)",
-            self._current_tab_index,
+            "Chat switch: assume open on tab %s → target %s (%s x %s)",
+            origin,
             target_index,
             self.channel_switch_key,
             steps,
         )
         for _ in range(steps):
             pyautogui.press(self.channel_switch_key)
-            time.sleep(0.12)
-        self._current_tab_index = target_index
+            time.sleep(0.1)
 
     async def send(
         self,
@@ -254,27 +257,25 @@ class SC2StubBackend(ChatBackend):
             if not self._focus_window(window):
                 return
 
-            await asyncio.sleep(random.uniform(0.12, 0.25))
+            await asyncio.sleep(random.uniform(0.08, 0.18))
             pyautogui.press(self.chat_key)
-            await asyncio.sleep(random.uniform(0.3, 0.45))
+            await asyncio.sleep(random.uniform(0.22, 0.35))
 
-            if chat_tab_index and chat_tab_index != self._current_tab_index:
-                self._switch_to_tab(chat_tab_index)
-                await asyncio.sleep(0.15)
-            elif chat_tab:
-                m = re.search(r"(\d+)", chat_tab)
+            idx = chat_tab_index
+            if not idx and chat_tab:
+                m = re.search(r"(\d{1,2})", chat_tab)
                 if m:
                     idx = int(m.group(1))
-                    if idx != self._current_tab_index:
-                        self._switch_to_tab(idx)
-                        await asyncio.sleep(0.15)
+            if idx and 1 <= idx <= self.max_chat_tabs:
+                self._switch_to_tab_absolute(idx)
+                await asyncio.sleep(0.1)
 
             if self.input_method == "paste" and HAS_PYPERCLIP:
                 self._paste_text(text)
             else:
                 self._type_text(text)
 
-            await asyncio.sleep(random.uniform(0.18, 0.28))
+            await asyncio.sleep(random.uniform(0.12, 0.2))
             pyautogui.press(self.send_key)
             self._recent_sends.append(text)
             logger.info(
@@ -307,14 +308,19 @@ class SC2StubBackend(ChatBackend):
             return ""
 
     def _extract_tab(self, head: str) -> Tuple[str, int]:
-        m = _TAB_RE.search(head or "")
-        if not m:
+        matches = list(_TAB_RE.finditer(head or ""))
+        if not matches:
             return "", 0
+        # Prefer the last real channel tag in the head (after doubled OCR junk)
+        m = matches[-1]
         try:
             idx = int(m.group(1))
         except ValueError:
-            idx = 0
-        return f"{m.group(1)}. {m.group(2).strip()}", idx
+            return "", 0
+        if idx < 1 or idx > self.max_chat_tabs:
+            return "", 0
+        label = f"{idx}. {m.group(2).strip()}"
+        return label, idx
 
     def _fingerprint(self, player: str, text: str) -> str:
         p = memory_key(player)
@@ -327,23 +333,25 @@ class SC2StubBackend(ChatBackend):
         pattern = re.compile(r"^(?P<head>.*?)\s*:\s*(?P<text>.+)$")
 
         for line in lines:
+            if is_ui_channel_label(line):
+                continue
             m = pattern.match(line)
             if not m:
                 continue
             head = m.group("head").strip()
             text = m.group("text").strip()
-            if not text:
+            if not text or is_ui_channel_label(text):
                 continue
 
             player = clean_ocr_player_name(head)
-            if not player or len(player) < 2 or len(player) > 32 or player.isdigit():
+            if not player:
                 continue
 
             tab, tab_idx = self._extract_tab(head)
             head_l = head.lower()
             if "team" in head_l:
                 channel = Channel.TEAM
-            elif "whisper" in head_l:
+            elif "whisper" in head_l or re.search(r"\bpm\b", head_l):
                 channel = Channel.WHISPER
             else:
                 channel = Channel.ALL
@@ -376,40 +384,26 @@ class SC2StubBackend(ChatBackend):
 
         curr_fps = {fp for *_, fp in parsed}
 
-        # First frame: remember everything on screen, emit nothing
         if not self._history_seeded:
             for *_, fp in parsed:
                 self._remember_fp(fp)
             self._prev_frame_fps = curr_fps
             self._history_seeded = True
-            self._last_ocr_text = raw
-            logger.info(
-                "Seeded %d chat lines — only lines that APPEAR after this will be logged",
-                len(parsed),
-            )
+            logger.info("Seeded %d chat lines — only NEW lines after this are logged", len(parsed))
             return []
 
-        # Lines present now that were not in the previous OCR frame
         appeared = curr_fps - self._prev_frame_fps
         self._prev_frame_fps = curr_fps
-
         if not appeared:
             return []
 
-        # Walk bottom → top so the newest visible lines are preferred
         new_msgs: list[ChatMessage] = []
         for player, text, channel, tab, tab_idx, fp in reversed(parsed):
-            if fp not in appeared:
+            if fp not in appeared or fp in self._seen:
                 continue
-            if fp in self._seen:
-                continue
-            if self._is_self(player):
+            if self._is_self(player) or self._is_echo_of_own_send(text):
                 self._remember_fp(fp)
                 continue
-            if self._is_echo_of_own_send(text):
-                self._remember_fp(fp)
-                continue
-
             self._remember_fp(fp)
             clean = short_display_name(player) or player
             msg = ChatMessage.from_parts(
@@ -424,23 +418,22 @@ class SC2StubBackend(ChatBackend):
             object.__setattr__(msg, "display_name", clean)
             new_msgs.append(msg)
 
-        # new_msgs is newest-first; reverse to chronological for the bot
         new_msgs.reverse()
         return new_msgs
 
     async def listen(self) -> AsyncIterator[ChatMessage]:
         logger.info(
-            "SC2StubBackend listen() OCR=%s poll=%.2fs (frame-diff new lines only)",
+            "SC2StubBackend listen() OCR=%s poll=%.2fs switch_channels=%s",
             self.ocr_enabled,
             self.poll_interval,
+            self.switch_channels,
         )
         if not self.ocr_enabled:
             logger.warning("OCR disabled — no messages will be yielded.")
 
         while self._connected:
             try:
-                msgs = await self._poll_once()
-                for msg in msgs:
+                for msg in await self._poll_once():
                     yield msg
             except Exception:
                 logger.exception("Error in OCR poll")
