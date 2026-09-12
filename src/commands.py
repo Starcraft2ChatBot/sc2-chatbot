@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+import re
 from typing import Callable, Optional
 
 from .models import ChatMessage
@@ -18,6 +19,9 @@ ALLOWED_MODES = {
     "troll",
     "ragebait",
 }
+
+# OCR often misreads leading ! as |, i, I, l, 1, /, \
+_OCR_PREFIX_RE = re.compile(r"^[!！|iIl1/\\]+\s*")
 
 
 class CommandHandler:
@@ -44,13 +48,41 @@ class CommandHandler:
     def is_owner(self, player: str) -> bool:
         return memory_key(player) in self.owners
 
+    def _strip_prefix(self, text: str) -> Optional[str]:
+        """Return body after command prefix, or None if not a command."""
+        t = (text or "").strip()
+        if not t:
+            return None
+        if t.startswith(self.prefix):
+            return t[len(self.prefix) :].lstrip()
+        # OCR-mangled prefix when configured prefix is !
+        if self.prefix == "!" and _OCR_PREFIX_RE.match(t):
+            body = _OCR_PREFIX_RE.sub("", t, count=1).lstrip()
+            # Only treat as command if the next token is a known command word
+            first = (body.split(maxsplit=1)[0] if body else "").lower()
+            known = {
+                "tone",
+                "aggro",
+                "prop",
+                "political",
+                "mode",
+                "mute",
+                "unmute",
+                "reload",
+                "status",
+                "length",
+            }
+            if first in known:
+                return body
+        return None
+
     def handle(self, msg: ChatMessage) -> Optional[str]:
         if not self.is_owner(msg.player):
             return None
-        text = (msg.text or "").strip()
-        if not text.startswith(self.prefix):
+        body = self._strip_prefix(msg.text or "")
+        if body is None:
             return None
-        parts = text[len(self.prefix) :].split(maxsplit=1)
+        parts = body.split(maxsplit=1)
         if not parts or not parts[0]:
             return None
         cmd = parts[0].lower()
