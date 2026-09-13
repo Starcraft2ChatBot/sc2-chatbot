@@ -1,8 +1,11 @@
 """Multi-provider LLM client (Gemini + OpenAI-compatible + Ollama local)."""
 from __future__ import annotations
 
+import json
 import logging
 import re
+import urllib.error
+import urllib.request
 from typing import Any, List, Optional
 
 logger = logging.getLogger("sc2_chatbot.llm")
@@ -10,12 +13,38 @@ logger = logging.getLogger("sc2_chatbot.llm")
 _DEFAULT_LOCAL_TIMEOUT = 120.0
 _DEFAULT_CLOUD_TIMEOUT = 60.0
 
-# Strip internal chain-of-thought wrappers some models emit
-_THINK_BLOCK_RE = re.compile(
-    r"<think>[\s\S]*?</think>",
-    flags=re.IGNORECASE,
-)
+_THINK_BLOCK_RE = re.compile(r"<think>[\s\S]*?</think>", flags=re.IGNORECASE)
 _THINK_OPEN_RE = re.compile(r"<think>[\s\S]*$", flags=re.IGNORECASE)
+
+# Text that is clearly system/planning echo — never send to game chat
+_META_MARKERS = (
+    "**priority",
+    "**format",
+    "**formatting",
+    "**constraint",
+    "**constraints",
+    "**length",
+    "**user input",
+    "priority:",
+    "formatting:",
+    "constraint:",
+    "constraints:",
+    "aggressiveness",
+    "emoji intensity",
+    "thinking process",
+    "do not use banned",
+    "banned character",
+    "internet shorthand",
+    "no trailing periods",
+    "single line only",
+    "lowercase/mixed",
+    "pivot to politics",
+    "propaganda bot",
+    "starcraft reference",
+    "as an ai",
+    "system prompt",
+    "roleplay",
+)
 
 
 def _is_timeout_error(exc: BaseException) -> bool:
@@ -77,8 +106,24 @@ def _is_connection_error(exc: BaseException) -> bool:
     return False
 
 
+def _looks_like_meta(text: str) -> bool:
+    low = (text or "").lower()
+    if not low.strip():
+        return True
+    if any(m in low for m in _META_MARKERS):
+        return True
+    # Bullet / markdown instruction dumps
+    if low.count("*") >= 3 or low.count("**") >= 2:
+        return True
+    if low.strip().startswith("*") and (":" in low[:40] or "**" in low[:40]):
+        return True
+    if "step " in low[:80] and ("analyze" in low or "intent" in low):
+        return True
+    return False
+
+
 def _clean_model_text(text: str) -> str:
-    """Remove think blocks / meta scaffolding; keep a short chat-style line if possible."""
+    """Strip think blocks; return a short chat-like line or empty if only meta."""
     if not text:
         return ""
     out = str(text)
@@ -86,7 +131,6 @@ def _clean_model_text(text: str) -> str:
     out = _THINK_OPEN_RE.sub("", out)
     out = out.strip().strip('"').strip("'")
 
-    # Prefer text after common "final reply" markers
     for marker in (
         "final answer:",
         "final reply:",
@@ -94,55 +138,36 @@ def _clean_model_text(text: str) -> str:
         "response:",
         "say:",
         "output:",
+        "chat message:",
     ):
         idx = out.lower().rfind(marker)
         if idx >= 0:
             candidate = out[idx + len(marker) :].strip()
-            if candidate:
+            if candidate and not _looks_like_meta(candidate):
                 out = candidate
                 break
 
-    # Drop pure planning dumps (keep last non-empty short-ish paragraph)
     lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
-    meta_prefixes = (
-        "thinking process",
-        "step ",
-        "step:",
-        "analyze",
-        "intent",
-        "strategy",
-        "user constraints",
-        "the model is",
-        "i need to",
-        "let me",
-        "first,",
-        "second,",
-        "third,",
-        "**",
-        "#",
-    )
     chat_lines: List[str] = []
     for ln in lines:
-        low = ln.lower()
-        if any(low.startswith(p) for p in meta_prefixes):
+        if _looks_like_meta(ln):
             continue
-        if low.startswith("-") and ("intent" in low or "strategy" in low):
+        # skip pure markdown bullets of instructions
+        if re.match(r"^[\-\*]\s+\*\*", ln):
             continue
         chat_lines.append(ln)
 
-    if chat_lines:
-        # Prefer the last 1–2 substantive lines (SC2 chat is short)
-        picked = " ".join(chat_lines[-2:]).strip()
-        if len(picked) > 400:
-            picked = picked[:400].rsplit(" ", 1)[0]
-        return picked
+    if not chat_lines:
+        return ""
 
-    # Fallback: last non-empty line if short enough to be a chat line
-    if lines:
-        last = lines[-1]
-        if len(last) <= 280 and not any(last.lower().startswith(p) for p in meta_prefixes):
-            return last
-    return ""
+    picked = " ".join(chat_lines[-2:]).strip()
+    # Strip leftover markdown stars
+    picked = re.sub(r"\*+", "", picked).strip()
+    if len(picked) > 280:
+        picked = picked[:280].rsplit(" ", 1)[0]
+    if _looks_like_meta(picked):
+        return ""
+    return picked
 
 
 class LLMClient:
@@ -244,6 +269,13 @@ class LLMClient:
             self.request_timeout_sec,
         )
 
+    def _ollama_native_base(self) -> str:
+        """Map OpenAI-style .../v1 to Ollama root."""
+        base = (self.base_url or "http://127.0.0.1:11434/v1").rstrip("/")
+        if base.endswith("/v1"):
+            base = base[:-3]
+        return base.rstrip("/") or "http://127.0.0.1:11434"
+
     def generate(
         self,
         system_prompt: str,
@@ -252,6 +284,14 @@ class LLMClient:
     ) -> str:
         if self.provider in ("gemini", "google"):
             return self._generate_gemini(system_prompt, user_prompt, history)
+        # Native Ollama chat + think=false is more reliable for Qwen3 thinking models
+        if self.provider in ("ollama", "local") or (
+            self.base_url and "11434" in (self.base_url or "")
+        ):
+            text = self._generate_ollama_native(system_prompt, user_prompt, history)
+            if text:
+                return text
+            logger.info("Ollama native empty; falling back to OpenAI-compatible path")
         return self._generate_openai(system_prompt, user_prompt, history)
 
     def _log_diag(
@@ -285,67 +325,115 @@ class LLMClient:
         err_type = type(exc).__name__
         err_msg = str(exc).replace("\n", " ")[:400]
         status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
-        request_id = None
-        body = None
-        try:
-            resp = getattr(exc, "response", None)
-            if resp is not None:
-                status = status or getattr(resp, "status_code", None)
-                headers = getattr(resp, "headers", None) or {}
-                request_id = headers.get("x-request-id") or headers.get("X-Request-Id")
-                try:
-                    body = getattr(resp, "text", None) or getattr(resp, "content", None)
-                    if body is not None:
-                        body = str(body)[:200]
-                except Exception:
-                    body = None
-        except Exception:
-            pass
-
         extra: dict[str, Any] = {"error_type": err_type, "error": err_msg}
         if status is not None:
             extra["status_code"] = status
-        if request_id:
-            extra["request_id"] = request_id
-        if body:
-            extra["response_body"] = body
 
         if _is_timeout_error(exc):
             extra["hint"] = (
-                "Connection/read timed out — for Ollama try a smaller model, "
-                "raise llm.request_timeout_sec, or wait for model load"
+                "Timed out — raise llm.request_timeout_sec or use a smaller model"
             )
             self._log_diag(kind="LLM connection timeout", source=source, extra=extra)
             return
-
         if _is_connection_error(exc):
             extra["hint"] = (
-                "Could not reach LLM API — for Ollama ensure `ollama serve` is running "
-                "and base_url is http://127.0.0.1:11434/v1"
+                "Could not reach Ollama — is `ollama serve` running? "
+                "base_url should be http://127.0.0.1:11434/v1"
             )
             self._log_diag(kind="LLM connection error", source=source, extra=extra)
             return
-
-        msg_l = err_msg.lower()
-        if status == 429 or "rate limit" in msg_l or "429" in msg_l:
-            extra["hint"] = "Rate limited (429) — wait and retry or switch model"
-            self._log_diag(kind="LLM rate limit error", source=source, extra=extra)
-            return
-        if status in (401, 403) or "unauthorized" in msg_l or "invalid api" in msg_l:
-            extra["hint"] = "Auth failed — check llm.api_key (Ollama can use any dummy key)"
-            self._log_diag(kind="LLM auth error", source=source, extra=extra)
-            return
-        if status == 404 or "not found" in msg_l:
-            extra["hint"] = (
-                "Model or endpoint not found — run `ollama list` and set llm.model "
-                "to an exact name (e.g. qwen3.5:9b)"
-            )
+        if status == 404 or "not found" in err_msg.lower():
+            extra["hint"] = "Model not found — run `ollama list` and set llm.model exactly"
             self._log_diag(kind="LLM not found error", source=source, extra=extra)
             return
-
-        extra["hint"] = "See error_type/error above; full traceback follows if logged"
+        extra["hint"] = "See error above"
         self._log_diag(kind="LLM request error", source=source, extra=extra)
         logger.exception("%s LLM error: %s", source, exc)
+
+    def _generate_ollama_native(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        history: Optional[List[dict]],
+    ) -> str:
+        """POST /api/chat with think=false so content is the real reply."""
+        messages: List[dict] = [
+            {
+                "role": "system",
+                "content": (
+                    f"{system_prompt}\n\n"
+                    "OUTPUT RULES: Reply with ONE short in-game chat line only. "
+                    "No markdown, no bullets, no lists, no analysis, no planning."
+                ),
+            }
+        ]
+        for h in history or []:
+            role = h.get("role", "user")
+            if role == "model":
+                role = "assistant"
+            parts = h.get("parts") or h.get("content") or ""
+            if isinstance(parts, list):
+                content = " ".join(str(p) for p in parts)
+            else:
+                content = str(parts)
+            messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": user_prompt})
+
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "stream": False,
+            "think": False,
+            "options": {
+                "temperature": self.temperature,
+                "num_predict": int(self.max_tokens),
+            },
+        }
+        url = f"{self._ollama_native_base()}/api/chat"
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.request_timeout_sec) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            self._log_transport_error(source="ollama_native", exp=e) if False else None
+            self._log_transport_error(source="ollama_native", exc=e)
+            return ""
+
+        msg = (body or {}).get("message") or {}
+        content = (msg.get("content") or "").strip()
+        thinking = (msg.get("thinking") or msg.get("reasoning") or "").strip()
+
+        text = _clean_model_text(content)
+        if text:
+            return text
+        if content and not _looks_like_meta(content):
+            return content[:280]
+
+        # Only use thinking if it cleans into a real chat line (not constraints)
+        if thinking:
+            cleaned = _clean_model_text(thinking)
+            if cleaned:
+                logger.info("Ollama native: using cleaned thinking as chat line")
+                return cleaned
+
+        self._log_empty(
+            source="ollama_native",
+            extra={
+                "content_repr": repr(content)[:120],
+                "thinking_len": len(thinking),
+                "hint": (
+                    "Empty content with think=false — lower temperature to ~0.9, "
+                    "max_output_tokens ~150, or try model qwen2.5:7b"
+                ),
+            },
+        )
+        return ""
 
     def _generate_gemini(
         self,
@@ -374,34 +462,18 @@ class LLMClient:
                     HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
                 },
             )
-
             text = ""
             try:
                 text = (response.text or "").strip()
             except Exception as te:
                 self._log_empty(
                     source="gemini",
-                    extra={
-                        "text_accessor_error": type(te).__name__,
-                        "text_accessor_detail": str(te)[:200],
-                    },
+                    extra={"text_accessor_error": type(te).__name__},
                 )
-
             if text:
-                return _clean_model_text(text) or text.strip()
-
-            extra: dict[str, Any] = {}
-            try:
-                cands = getattr(response, "candidates", None) or []
-                extra["candidates"] = len(cands)
-                if cands:
-                    c0 = cands[0]
-                    fr = getattr(c0, "finish_reason", None)
-                    extra["finish_reason"] = str(fr)
-            except Exception as de:
-                extra["diag_error"] = f"{type(de).__name__}: {de}"[:200]
-
-            self._log_empty(source="gemini", extra=extra)
+                cleaned = _clean_model_text(text)
+                return cleaned or (text if not _looks_like_meta(text) else "")
+            self._log_empty(source="gemini", extra={})
             return ""
         except Exception as e:
             self._log_transport_error(source="gemini", exc=e)
@@ -414,7 +486,12 @@ class LLMClient:
         content = getattr(message, "content", None)
         if isinstance(content, str) and content.strip():
             cleaned = _clean_model_text(content)
-            return cleaned or content.strip()
+            if cleaned:
+                return cleaned
+            if not _looks_like_meta(content):
+                return content.strip()[:280]
+            return ""
+
         if isinstance(content, list):
             bits: List[str] = []
             for block in content:
@@ -431,23 +508,20 @@ class LLMClient:
             joined = " ".join(bits).strip()
             if joined:
                 cleaned = _clean_model_text(joined)
-                return cleaned or joined
+                if cleaned:
+                    return cleaned
+                if not _looks_like_meta(joined):
+                    return joined[:280]
 
-        # Thinking models (Qwen3 etc. via Ollama) often put text only in reasoning*
-        for attr in ("reasoning_content", "reasoning", "reasoning_details"):
+        # reasoning only if it becomes a real chat line — never dump planning notes
+        for attr in ("reasoning_content", "reasoning", "reasoning_details", "thinking"):
             val = getattr(message, attr, None)
-            if val is None:
+            if not val:
                 continue
-            raw = str(val).strip()
-            if not raw:
-                continue
-            cleaned = _clean_model_text(raw)
+            cleaned = _clean_model_text(str(val))
             if cleaned:
-                logger.info(
-                    "Using %s field (message.content was empty)", attr
-                )
+                logger.info("Using cleaned %s field as chat line", attr)
                 return cleaned
-
         return ""
 
     def _generate_openai(
@@ -457,14 +531,11 @@ class LLMClient:
         history: Optional[List[dict]],
     ) -> str:
         try:
-            # Nudge thinking models to emit a normal chat line in content
             system_prompt = (
                 f"{system_prompt}\n\n"
-                "IMPORTANT: Reply with only the in-game chat message text. "
-                "Do not output thinking, analysis, steps, or meta commentary. "
-                "One short chat line only."
+                "OUTPUT: one short in-game chat message only. "
+                "No markdown, no bullets, no analysis, no constraint lists."
             )
-
             messages = [{"role": "system", "content": system_prompt}]
             for h in history or []:
                 role = h.get("role", "user")
@@ -483,36 +554,21 @@ class LLMClient:
                 "messages": messages,
                 "temperature": self.temperature,
                 "max_tokens": self.max_tokens,
+                "extra_body": {"think": False},
             }
-
-            # Ollama thinking models: try to disable think mode when supported
-            if self.provider in ("ollama", "local") or (
-                self.base_url and "11434" in (self.base_url or "")
-            ):
-                create_kwargs["extra_body"] = {
-                    "think": False,
-                    "options": {"num_predict": self.max_tokens},
-                }
 
             try:
                 resp = self._openai.chat.completions.create(**create_kwargs)
             except Exception as e:
                 err_s = str(e).lower()
-                # Retry without extra_body if server rejects unknown fields
-                if "extra_body" in create_kwargs and (
-                    "unknown" in err_s or "unexpected" in err_s or "invalid" in err_s
-                ):
+                if "extra_body" in create_kwargs:
                     create_kwargs.pop("extra_body", None)
                     try:
                         resp = self._openai.chat.completions.create(**create_kwargs)
                     except Exception as e2:
                         self._log_transport_error(source="openai_compatible", exc=e2)
                         return ""
-                elif (
-                    not _is_timeout_error(e)
-                    and not _is_connection_error(e)
-                    and ("max_tokens" in err_s or "max_completion_tokens" in err_s)
-                ):
+                elif "max_tokens" in err_s or "max_completion_tokens" in err_s:
                     create_kwargs.pop("max_tokens", None)
                     create_kwargs["max_completion_tokens"] = self.max_tokens
                     try:
@@ -526,55 +582,23 @@ class LLMClient:
 
             choices = getattr(resp, "choices", None) or []
             if not choices:
-                self._log_empty(
-                    source="openai_compatible",
-                    extra={
-                        "choices": 0,
-                        "id": getattr(resp, "id", None),
-                        "hint": "API returned no choices — check model name with `ollama list`",
-                    },
-                )
+                self._log_empty(source="openai_compatible", extra={"choices": 0})
                 return ""
 
             choice = choices[0]
             message = getattr(choice, "message", None)
             text = self._extract_openai_message_text(message)
-
             if text:
                 return text
 
             extra: dict[str, Any] = {
-                "choices": len(choices),
                 "finish_reason": getattr(choice, "finish_reason", None),
-                "id": getattr(resp, "id", None),
+                "hint": (
+                    "No usable chat line (only planning/meta). "
+                    "Set temperature 0.9, max_output_tokens 150, pull latest code, "
+                    "or switch to qwen2.5:7b"
+                ),
             }
-
-            if message is not None:
-                raw_content = getattr(message, "content", None)
-                extra["content_type"] = type(raw_content).__name__
-                extra["content_repr"] = repr(raw_content)[:120]
-                for attr in ("reasoning_content", "reasoning", "reasoning_details"):
-                    val = getattr(message, attr, None)
-                    if val:
-                        extra[attr] = str(val)[:160]
-                        extra["hint"] = (
-                            "Reasoning-only output could not be turned into a chat line — "
-                            "lower temperature, set max_output_tokens ~120–200, "
-                            "or use a non-thinking instruct model"
-                        )
-
-            usage = getattr(resp, "usage", None)
-            if usage is not None:
-                extra["prompt_tokens"] = getattr(usage, "prompt_tokens", None)
-                extra["completion_tokens"] = getattr(usage, "completion_tokens", None)
-
-            fr = str(getattr(choice, "finish_reason", "") or "").lower()
-            if fr in ("length", "max_tokens") and not extra.get("hint"):
-                extra["hint"] = (
-                    "finish_reason=length — model spent all tokens on thinking; "
-                    "set max_output_tokens to 150–250 (not 1900) and temperature ~0.9"
-                )
-
             self._log_empty(source="openai_compatible", extra=extra)
             return ""
         except Exception as e:
