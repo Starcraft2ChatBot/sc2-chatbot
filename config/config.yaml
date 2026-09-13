@@ -63,7 +63,10 @@ behaviour:
   ignore_system: true
   reply_to_game_requests: false
   game_request_use_canned: false
+  # Prefix the player's name on replies (e.g. "Bob, ...")
   address_by_name: true
+  # How often to include the name: 0.0 = never, 1.0 = every reply, 0.3 ≈ 30%
+  address_by_name_chance: 0.3
   name_separator: ", "
 
 anti_spam:
