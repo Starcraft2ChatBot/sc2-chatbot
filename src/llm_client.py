@@ -7,6 +7,66 @@ from typing import Any, List, Optional
 logger = logging.getLogger("sc2_chatbot.llm")
 
 
+def _is_timeout_error(exc: BaseException) -> bool:
+    name = type(exc).__name__.lower()
+    msg = str(exc).lower()
+    needles = (
+        "timeout",
+        "timed out",
+        "time out",
+        "deadline exceeded",
+        "readtimeout",
+        "connecttimeout",
+        "writetimeout",
+        "pooltimeout",
+        "apitimeout",
+    )
+    if any(n in name for n in ("timeout", "timedout", "deadline")):
+        return True
+    if any(n in msg for n in needles):
+        return True
+    # Walk cause/context chain
+    for attr in ("__cause__", "__context__"):
+        nested = getattr(exc, attr, None)
+        if nested is not None and nested is not exc:
+            if _is_timeout_error(nested):
+                return True
+    return False
+
+
+def _is_connection_error(exc: BaseException) -> bool:
+    name = type(exc).__name__.lower()
+    msg = str(exc).lower()
+    if _is_timeout_error(exc):
+        return False
+    needles = (
+        "connection",
+        "connect error",
+        "connecterror",
+        "network",
+        "name or service not known",
+        "nodename nor servname",
+        "temporary failure in name resolution",
+        "connection reset",
+        "connection refused",
+        "broken pipe",
+        "remote end closed",
+        "ssl",
+        "proxy",
+        "unreachable",
+    )
+    if any(n in name for n in ("connection", "connecterror", "networkerror")):
+        return True
+    if any(n in msg for n in needles):
+        return True
+    for attr in ("__cause__", "__context__"):
+        nested = getattr(exc, attr, None)
+        if nested is not None and nested is not exc:
+            if _is_connection_error(nested):
+                return True
+    return False
+
+
 class LLMClient:
     """Unified generate() for Gemini or any OpenAI-compatible chat API."""
 
@@ -77,15 +137,16 @@ class LLMClient:
             return self._generate_gemini(system_prompt, user_prompt, history)
         return self._generate_openai(system_prompt, user_prompt, history)
 
-    def _log_empty(
+    def _log_diag(
         self,
         *,
+        kind: str,
         source: str,
         extra: Optional[dict] = None,
     ) -> None:
-        """Structured diagnostics when the model returns no usable text."""
+        """Structured diagnostics line for empty replies, timeouts, connection errors."""
         parts = [
-            f"LLM returned empty response",
+            kind,
             f"provider={self.provider}",
             f"model={self.model}",
             f"source={source}",
@@ -100,6 +161,101 @@ class LLMClient:
                     continue
                 parts.append(f"{k}={v}")
         logger.warning("%s", " | ".join(parts))
+
+    def _log_empty(
+        self,
+        *,
+        source: str,
+        extra: Optional[dict] = None,
+    ) -> None:
+        self._log_diag(kind="LLM returned empty response", source=source, extra=extra)
+
+    def _log_transport_error(
+        self,
+        *,
+        source: str,
+        exc: BaseException,
+    ) -> None:
+        """Classify timeout vs connection vs other API failures with hints."""
+        err_type = type(exc).__name__
+        err_msg = str(exc).replace("\n", " ")[:400]
+        status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+        request_id = None
+        body = None
+        try:
+            resp = getattr(exc, "response", None)
+            if resp is not None:
+                status = status or getattr(resp, "status_code", None)
+                request_id = (
+                    getattr(resp, "headers", {}) or {}
+                ).get("x-request-id") or (getattr(resp, "headers", {}) or {}).get(
+                    "X-Request-Id"
+                )
+                try:
+                    body = getattr(resp, "text", None) or getattr(resp, "content", None)
+                    if body is not None:
+                        body = str(body)[:200]
+                except Exception:
+                    body = None
+        except Exception:
+            pass
+
+        extra: dict[str, Any] = {
+            "error_type": err_type,
+            "error": err_msg,
+        }
+        if status is not None:
+            extra["status_code"] = status
+        if request_id:
+            extra["request_id"] = request_id
+        if body:
+            extra["response_body"] = body
+
+        if _is_timeout_error(exc):
+            extra["hint"] = (
+                "Connection/read timed out — provider slow or unreachable; "
+                "retry later, switch model/endpoint, or check network/VPN/firewall"
+            )
+            self._log_diag(
+                kind="LLM connection timeout",
+                source=source,
+                extra=extra,
+            )
+            return
+
+        if _is_connection_error(exc):
+            extra["hint"] = (
+                "Could not reach LLM API — check network, DNS, base_url, "
+                "VPN/firewall, and that the provider is online"
+            )
+            self._log_diag(
+                kind="LLM connection error",
+                source=source,
+                extra=extra,
+            )
+            return
+
+        # Rate limit / auth / other HTTP-style errors often surface here too
+        msg_l = err_msg.lower()
+        if status == 429 or "rate limit" in msg_l or "429" in msg_l:
+            extra["hint"] = (
+                "Rate limited (429) — wait and retry, slow anti-spam, "
+                "or switch model/provider"
+            )
+            self._log_diag(kind="LLM rate limit error", source=source, extra=extra)
+            return
+        if status in (401, 403) or "unauthorized" in msg_l or "invalid api" in msg_l:
+            extra["hint"] = "Auth failed — check llm.api_key and provider account"
+            self._log_diag(kind="LLM auth error", source=source, extra=extra)
+            return
+        if status == 404 or "not found" in msg_l:
+            extra["hint"] = "Model or endpoint not found — verify llm.model and base_url"
+            self._log_diag(kind="LLM not found error", source=source, extra=extra)
+            return
+
+        extra["hint"] = "See error_type/error above; full traceback follows if logged"
+        self._log_diag(kind="LLM request error", source=source, extra=extra)
+        logger.exception("%s LLM error: %s", source, exc)
 
     def _generate_gemini(
         self,
@@ -161,7 +317,6 @@ class LLMClient:
                     parts = getattr(content, "parts", None) if content else None
                     extra["parts"] = len(parts) if parts is not None else 0
                     if parts:
-                        # Some models put text in parts without .text aggregating
                         snippets = []
                         for p in parts[:3]:
                             t = getattr(p, "text", None)
@@ -178,7 +333,7 @@ class LLMClient:
             self._log_empty(source="gemini", extra=extra)
             return ""
         except Exception as e:
-            logger.exception("Gemini error: %s", e)
+            self._log_transport_error(source="gemini", exc=e)
             return ""
 
     def _extract_openai_message_text(self, message: Any) -> str:
@@ -206,7 +361,6 @@ class LLMClient:
             if joined:
                 return joined
 
-        # Some gateways put a refusal string instead of content
         refusal = getattr(message, "refusal", None)
         if isinstance(refusal, str) and refusal.strip():
             return ""
@@ -243,14 +397,23 @@ class LLMClient:
             try:
                 resp = self._openai.chat.completions.create(**create_kwargs)
             except Exception as e:
-                # Some newer APIs prefer max_completion_tokens
                 err_s = str(e).lower()
-                if "max_tokens" in err_s or "max_completion_tokens" in err_s:
+                # Retry once with max_completion_tokens if API rejects max_tokens
+                if (
+                    not _is_timeout_error(e)
+                    and not _is_connection_error(e)
+                    and ("max_tokens" in err_s or "max_completion_tokens" in err_s)
+                ):
                     create_kwargs.pop("max_tokens", None)
                     create_kwargs["max_completion_tokens"] = self.max_tokens
-                    resp = self._openai.chat.completions.create(**create_kwargs)
+                    try:
+                        resp = self._openai.chat.completions.create(**create_kwargs)
+                    except Exception as e2:
+                        self._log_transport_error(source="openai_compatible", exc=e2)
+                        return ""
                 else:
-                    raise
+                    self._log_transport_error(source="openai_compatible", exc=e)
+                    return ""
 
             choices = getattr(resp, "choices", None) or []
             if not choices:
@@ -271,7 +434,6 @@ class LLMClient:
             if text:
                 return text
 
-            # Empty content — dump diagnostics for DeepSeek / OpenRouter / NVIDIA / etc.
             extra: dict[str, Any] = {
                 "choices": len(choices),
                 "finish_reason": getattr(choice, "finish_reason", None),
@@ -286,7 +448,6 @@ class LLMClient:
                 if refusal:
                     extra["refusal"] = str(refusal)[:200]
                     extra["hint"] = "Model refused; content empty (safety/policy)"
-                # Reasoning models sometimes only fill reasoning fields
                 for attr in (
                     "reasoning_content",
                     "reasoning",
@@ -313,7 +474,6 @@ class LLMClient:
                 extra["prompt_tokens"] = getattr(usage, "prompt_tokens", None)
                 extra["completion_tokens"] = getattr(usage, "completion_tokens", None)
                 extra["total_tokens"] = getattr(usage, "total_tokens", None)
-                # OpenRouter / some providers nest details
                 details = getattr(usage, "completion_tokens_details", None)
                 if details is not None:
                     rt = getattr(details, "reasoning_tokens", None)
@@ -334,7 +494,7 @@ class LLMClient:
             self._log_empty(source="openai_compatible", extra=extra)
             return ""
         except Exception as e:
-            logger.exception("OpenAI-compatible LLM error: %s", e)
+            self._log_transport_error(source="openai_compatible", exc=e)
             return ""
 
 
