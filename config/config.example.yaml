@@ -58,6 +58,17 @@ blacklist:
     "—": "-"
     "–": "-"
 
+# ====================== FAVORITE WORDS ======================
+# Nudges the model to use these words/phrases more often when natural.
+# intensity: soft | medium | strong
+favorites:
+  intensity: medium
+  words:
+    - "bruh"
+    - "lmao"
+    - "nah"
+    - "bet"
+
 behaviour:
   min_reply_delay_sec: 0.35
   max_reply_delay_sec: 0.8
