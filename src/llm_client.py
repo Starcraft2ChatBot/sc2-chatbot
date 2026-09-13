@@ -16,7 +16,6 @@ _DEFAULT_CLOUD_TIMEOUT = 60.0
 _THINK_BLOCK_RE = re.compile(r"<think>[\s\S]*?</think>", flags=re.IGNORECASE)
 _THINK_OPEN_RE = re.compile(r"<think>[\s\S]*$", flags=re.IGNORECASE)
 
-# Text that is clearly system/planning echo — never send to game chat
 _META_MARKERS = (
     "**priority",
     "**format",
@@ -51,15 +50,8 @@ def _is_timeout_error(exc: BaseException) -> bool:
     name = type(exc).__name__.lower()
     msg = str(exc).lower()
     needles = (
-        "timeout",
-        "timed out",
-        "time out",
-        "deadline exceeded",
-        "readtimeout",
-        "connecttimeout",
-        "writetimeout",
-        "pooltimeout",
-        "apitimeout",
+        "timeout", "timed out", "time out", "deadline exceeded",
+        "readtimeout", "connecttimeout", "writetimeout", "pooltimeout", "apitimeout",
     )
     if any(n in name for n in ("timeout", "timedout", "deadline")):
         return True
@@ -67,9 +59,8 @@ def _is_timeout_error(exc: BaseException) -> bool:
         return True
     for attr in ("__cause__", "__context__"):
         nested = getattr(exc, attr, None)
-        if nested is not None and nested is not exc:
-            if _is_timeout_error(nested):
-                return True
+        if nested is not None and nested is not exc and _is_timeout_error(nested):
+            return True
     return False
 
 
@@ -79,20 +70,11 @@ def _is_connection_error(exc: BaseException) -> bool:
     if _is_timeout_error(exc):
         return False
     needles = (
-        "connection",
-        "connect error",
-        "connecterror",
-        "network",
-        "name or service not known",
-        "nodename nor servname",
-        "temporary failure in name resolution",
-        "connection reset",
-        "connection refused",
-        "broken pipe",
-        "remote end closed",
-        "ssl",
-        "proxy",
-        "unreachable",
+        "connection", "connect error", "connecterror", "network",
+        "name or service not known", "nodename nor servname",
+        "temporary failure in name resolution", "connection reset",
+        "connection refused", "broken pipe", "remote end closed",
+        "ssl", "proxy", "unreachable",
     )
     if any(n in name for n in ("connection", "connecterror", "networkerror")):
         return True
@@ -100,9 +82,8 @@ def _is_connection_error(exc: BaseException) -> bool:
         return True
     for attr in ("__cause__", "__context__"):
         nested = getattr(exc, attr, None)
-        if nested is not None and nested is not exc:
-            if _is_connection_error(nested):
-                return True
+        if nested is not None and nested is not exc and _is_connection_error(nested):
+            return True
     return False
 
 
@@ -112,7 +93,6 @@ def _looks_like_meta(text: str) -> bool:
         return True
     if any(m in low for m in _META_MARKERS):
         return True
-    # Bullet / markdown instruction dumps
     if low.count("*") >= 3 or low.count("**") >= 2:
         return True
     if low.strip().startswith("*") and (":" in low[:40] or "**" in low[:40]):
@@ -123,7 +103,6 @@ def _looks_like_meta(text: str) -> bool:
 
 
 def _clean_model_text(text: str) -> str:
-    """Strip think blocks; return a short chat-like line or empty if only meta."""
     if not text:
         return ""
     out = str(text)
@@ -132,17 +111,12 @@ def _clean_model_text(text: str) -> str:
     out = out.strip().strip('"').strip("'")
 
     for marker in (
-        "final answer:",
-        "final reply:",
-        "reply:",
-        "response:",
-        "say:",
-        "output:",
-        "chat message:",
+        "final answer:", "final reply:", "reply:", "response:",
+        "say:", "output:", "chat message:",
     ):
         idx = out.lower().rfind(marker)
         if idx >= 0:
-            candidate = out[idx + len(marker) :].strip()
+            candidate = out[idx + len(marker):].strip()
             if candidate and not _looks_like_meta(candidate):
                 out = candidate
                 break
@@ -152,7 +126,6 @@ def _clean_model_text(text: str) -> str:
     for ln in lines:
         if _looks_like_meta(ln):
             continue
-        # skip pure markdown bullets of instructions
         if re.match(r"^[\-\*]\s+\*\*", ln):
             continue
         chat_lines.append(ln)
@@ -161,7 +134,6 @@ def _clean_model_text(text: str) -> str:
         return ""
 
     picked = " ".join(chat_lines[-2:]).strip()
-    # Strip leftover markdown stars
     picked = re.sub(r"\*+", "", picked).strip()
     if len(picked) > 280:
         picked = picked[:280].rsplit(" ", 1)[0]
@@ -171,8 +143,6 @@ def _clean_model_text(text: str) -> str:
 
 
 class LLMClient:
-    """Unified generate() for Gemini, OpenAI-compatible APIs, and local Ollama."""
-
     def __init__(
         self,
         *,
@@ -217,19 +187,13 @@ class LLMClient:
                 raise ValueError("LLM api_key is required for Gemini")
             self._init_gemini()
         elif self.provider in (
-            "openai",
-            "openai_compatible",
-            "openrouter",
-            "custom",
-            "ollama",
-            "local",
+            "openai", "openai_compatible", "openrouter", "custom", "ollama", "local",
         ):
             if not self.api_key:
                 self.api_key = "ollama" if is_local else ""
             if not self.api_key:
                 raise ValueError(
-                    "LLM api_key is required (set in config under llm). "
-                    "For Ollama use provider: ollama (key is optional)."
+                    "LLM api_key is required. For Ollama use provider: ollama (key optional)."
                 )
             self._init_openai()
         else:
@@ -240,7 +204,6 @@ class LLMClient:
 
     def _init_gemini(self) -> None:
         import google.generativeai as genai
-
         genai.configure(api_key=self.api_key)
         self._genai = genai
         self._gemini_model = genai.GenerativeModel(self.model)
@@ -250,27 +213,17 @@ class LLMClient:
         try:
             from openai import OpenAI
         except ImportError as e:
-            raise ImportError(
-                "OpenAI-compatible / Ollama provider requires:  pip install openai"
-            ) from e
-
-        kwargs: dict[str, Any] = {
-            "api_key": self.api_key,
-            "timeout": self.request_timeout_sec,
-        }
+            raise ImportError("pip install openai") from e
+        kwargs: dict[str, Any] = {"api_key": self.api_key, "timeout": self.request_timeout_sec}
         if self.base_url:
             kwargs["base_url"] = self.base_url
         self._openai = OpenAI(**kwargs)
         logger.info(
             "LLM provider=%s model=%s base_url=%s timeout=%.0fs",
-            self.provider,
-            self.model,
-            self.base_url or "(default)",
-            self.request_timeout_sec,
+            self.provider, self.model, self.base_url or "(default)", self.request_timeout_sec,
         )
 
     def _ollama_native_base(self) -> str:
-        """Map OpenAI-style .../v1 to Ollama root."""
         base = (self.base_url or "http://127.0.0.1:11434/v1").rstrip("/")
         if base.endswith("/v1"):
             base = base[:-3]
@@ -284,7 +237,6 @@ class LLMClient:
     ) -> str:
         if self.provider in ("gemini", "google"):
             return self._generate_gemini(system_prompt, user_prompt, history)
-        # Native Ollama chat + think=false is more reliable for Qwen3 thinking models
         if self.provider in ("ollama", "local") or (
             self.base_url and "11434" in (self.base_url or "")
         ):
@@ -294,20 +246,10 @@ class LLMClient:
             logger.info("Ollama native empty; falling back to OpenAI-compatible path")
         return self._generate_openai(system_prompt, user_prompt, history)
 
-    def _log_diag(
-        self,
-        *,
-        kind: str,
-        source: str,
-        extra: Optional[dict] = None,
-    ) -> None:
+    def _log_diag(self, *, kind: str, source: str, extra: Optional[dict] = None) -> None:
         parts = [
-            kind,
-            f"provider={self.provider}",
-            f"model={self.model}",
-            f"source={source}",
-            f"temperature={self.temperature}",
-            f"max_tokens={self.max_tokens}",
+            kind, f"provider={self.provider}", f"model={self.model}",
+            f"source={source}", f"temperature={self.temperature}", f"max_tokens={self.max_tokens}",
         ]
         if self.base_url:
             parts.append(f"base_url={self.base_url}")
@@ -328,22 +270,16 @@ class LLMClient:
         extra: dict[str, Any] = {"error_type": err_type, "error": err_msg}
         if status is not None:
             extra["status_code"] = status
-
         if _is_timeout_error(exc):
-            extra["hint"] = (
-                "Timed out — raise llm.request_timeout_sec or use a smaller model"
-            )
+            extra["hint"] = "Timed out — raise llm.request_timeout_sec or use a smaller model"
             self._log_diag(kind="LLM connection timeout", source=source, extra=extra)
             return
         if _is_connection_error(exc):
-            extra["hint"] = (
-                "Could not reach Ollama — is `ollama serve` running? "
-                "base_url should be http://127.0.0.1:11434/v1"
-            )
+            extra["hint"] = "Could not reach Ollama — is ollama serve running?"
             self._log_diag(kind="LLM connection error", source=source, extra=extra)
             return
         if status == 404 or "not found" in err_msg.lower():
-            extra["hint"] = "Model not found — run `ollama list` and set llm.model exactly"
+            extra["hint"] = "Model not found — run ollama list and set llm.model exactly"
             self._log_diag(kind="LLM not found error", source=source, extra=extra)
             return
         extra["hint"] = "See error above"
@@ -356,26 +292,20 @@ class LLMClient:
         user_prompt: str,
         history: Optional[List[dict]],
     ) -> str:
-        """POST /api/chat with think=false so content is the real reply."""
-        messages: List[dict] = [
-            {
-                "role": "system",
-                "content": (
-                    f"{system_prompt}\n\n"
-                    "OUTPUT RULES: Reply with ONE short in-game chat line only. "
-                    "No markdown, no bullets, no lists, no analysis, no planning."
-                ),
-            }
-        ]
+        messages: List[dict] = [{
+            "role": "system",
+            "content": (
+                f"{system_prompt}\n\n"
+                "OUTPUT RULES: Reply with ONE short in-game chat line only. "
+                "No markdown, no bullets, no lists, no analysis, no planning."
+            ),
+        }]
         for h in history or []:
             role = h.get("role", "user")
             if role == "model":
                 role = "assistant"
             parts = h.get("parts") or h.get("content") or ""
-            if isinstance(parts, list):
-                content = " ".join(str(p) for p in parts)
-            else:
-                content = str(parts)
+            content = " ".join(str(p) for p in parts) if isinstance(parts, list) else str(parts)
             messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": user_prompt})
 
@@ -384,24 +314,17 @@ class LLMClient:
             "messages": messages,
             "stream": False,
             "think": False,
-            "options": {
-                "temperature": self.temperature,
-                "num_predict": int(self.max_tokens),
-            },
+            "options": {"temperature": self.temperature, "num_predict": int(self.max_tokens)},
         }
         url = f"{self._ollama_native_base()}/api/chat"
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
-            url,
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
+            url, data=data, headers={"Content-Type": "application/json"}, method="POST",
         )
         try:
             with urllib.request.urlopen(req, timeout=self.request_timeout_sec) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
         except Exception as e:
-            self._log_transport_error(source="ollama_native", exp=e) if False else None
             self._log_transport_error(source="ollama_native", exc=e)
             return ""
 
@@ -415,7 +338,6 @@ class LLMClient:
         if content and not _looks_like_meta(content):
             return content[:280]
 
-        # Only use thinking if it cleans into a real chat line (not constraints)
         if thinking:
             cleaned = _clean_model_text(thinking)
             if cleaned:
@@ -427,33 +349,22 @@ class LLMClient:
             extra={
                 "content_repr": repr(content)[:120],
                 "thinking_len": len(thinking),
-                "hint": (
-                    "Empty content with think=false — lower temperature to ~0.9, "
-                    "max_output_tokens ~150, or try model qwen2.5:7b"
-                ),
+                "hint": "Empty after think=false — set temperature 0.9, max_output_tokens 150, or try qwen2.5:7b",
             },
         )
         return ""
 
     def _generate_gemini(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        history: Optional[List[dict]],
+        self, system_prompt: str, user_prompt: str, history: Optional[List[dict]],
     ) -> str:
         try:
             from google.generativeai.types import HarmCategory, HarmBlockThreshold
-
             chat = self._gemini_model.start_chat(history=history or [])
-            full_prompt = (
-                f"{system_prompt}\n\n---\n"
-                f"Current message to reply to:\n{user_prompt}"
-            )
+            full_prompt = f"{system_prompt}\n\n---\nCurrent message to reply to:\n{user_prompt}"
             response = chat.send_message(
                 full_prompt,
                 generation_config=self._genai.types.GenerationConfig(
-                    temperature=self.temperature,
-                    max_output_tokens=self.max_tokens,
+                    temperature=self.temperature, max_output_tokens=self.max_tokens,
                 ),
                 safety_settings={
                     HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
@@ -466,10 +377,7 @@ class LLMClient:
             try:
                 text = (response.text or "").strip()
             except Exception as te:
-                self._log_empty(
-                    source="gemini",
-                    extra={"text_accessor_error": type(te).__name__},
-                )
+                self._log_empty(source="gemini", extra={"text_accessor_error": type(te).__name__})
             if text:
                 cleaned = _clean_model_text(text)
                 return cleaned or (text if not _looks_like_meta(text) else "")
@@ -482,7 +390,6 @@ class LLMClient:
     def _extract_openai_message_text(self, message: Any) -> str:
         if message is None:
             return ""
-
         content = getattr(message, "content", None)
         if isinstance(content, str) and content.strip():
             cleaned = _clean_model_text(content)
@@ -491,7 +398,6 @@ class LLMClient:
             if not _looks_like_meta(content):
                 return content.strip()[:280]
             return ""
-
         if isinstance(content, list):
             bits: List[str] = []
             for block in content:
@@ -512,8 +418,6 @@ class LLMClient:
                     return cleaned
                 if not _looks_like_meta(joined):
                     return joined[:280]
-
-        # reasoning only if it becomes a real chat line — never dump planning notes
         for attr in ("reasoning_content", "reasoning", "reasoning_details", "thinking"):
             val = getattr(message, attr, None)
             if not val:
@@ -525,10 +429,7 @@ class LLMClient:
         return ""
 
     def _generate_openai(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        history: Optional[List[dict]],
+        self, system_prompt: str, user_prompt: str, history: Optional[List[dict]],
     ) -> str:
         try:
             system_prompt = (
@@ -542,10 +443,7 @@ class LLMClient:
                 if role == "model":
                     role = "assistant"
                 parts = h.get("parts") or h.get("content") or ""
-                if isinstance(parts, list):
-                    content = " ".join(str(p) for p in parts)
-                else:
-                    content = str(parts)
+                content = " ".join(str(p) for p in parts) if isinstance(parts, list) else str(parts)
                 messages.append({"role": role, "content": content})
             messages.append({"role": "user", "content": user_prompt})
 
@@ -556,7 +454,6 @@ class LLMClient:
                 "max_tokens": self.max_tokens,
                 "extra_body": {"think": False},
             }
-
             try:
                 resp = self._openai.chat.completions.create(**create_kwargs)
             except Exception as e:
@@ -584,22 +481,16 @@ class LLMClient:
             if not choices:
                 self._log_empty(source="openai_compatible", extra={"choices": 0})
                 return ""
-
-            choice = choices[0]
-            message = getattr(choice, "message", None)
-            text = self._extract_openai_message_text(message)
+            text = self._extract_openai_message_text(getattr(choices[0], "message", None))
             if text:
                 return text
-
-            extra: dict[str, Any] = {
-                "finish_reason": getattr(choice, "finish_reason", None),
-                "hint": (
-                    "No usable chat line (only planning/meta). "
-                    "Set temperature 0.9, max_output_tokens 150, pull latest code, "
-                    "or switch to qwen2.5:7b"
-                ),
-            }
-            self._log_empty(source="openai_compatible", extra=extra)
+            self._log_empty(
+                source="openai_compatible",
+                extra={
+                    "finish_reason": getattr(choices[0], "finish_reason", None),
+                    "hint": "No usable chat line — temperature 0.9, max_output_tokens 150, or qwen2.5:7b",
+                },
+            )
             return ""
         except Exception as e:
             self._log_transport_error(source="openai_compatible", exc=e)
@@ -608,16 +499,10 @@ class LLMClient:
 
 class GeminiClient(LLMClient):
     def __init__(
-        self,
-        api_key: str,
-        model: str = "gemini-2.0-flash",
-        temperature: float = 0.85,
-        max_tokens: int = 180,
+        self, api_key: str, model: str = "gemini-2.0-flash",
+        temperature: float = 0.85, max_tokens: int = 180,
     ):
         super().__init__(
-            provider="gemini",
-            api_key=api_key,
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
+            provider="gemini", api_key=api_key, model=model,
+            temperature=temperature, max_tokens=max_tokens,
         )
