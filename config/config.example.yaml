@@ -6,6 +6,12 @@ llm:
   temperature: 0.9
   max_output_tokens: 120
   base_url: null
+  # Fail-fast network timeouts (seconds). Stops 1–2 min hangs when firewall blocks LLM.
+  request_timeout_sec: 20
+  connect_timeout_sec: 8
+  health_timeout_sec: 10
+  # After a timeout/connection error, skip full generates for this many seconds
+  fail_cooldown_sec: 45
 
 gemini:
   api_key: ""
