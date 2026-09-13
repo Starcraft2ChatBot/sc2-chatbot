@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import random
 import re
-from typing import Any, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from rich.console import Console
 from rich.status import Status
@@ -30,6 +30,79 @@ GAME_REQUEST_REPLIES = {
 }
 
 
+def apply_blacklist(text: str, cfg: Optional[Dict[str, Any]]) -> str:
+    """Remove or replace blacklisted words, symbols, letters, and substrings.
+
+    Config keys (all optional):
+      case_sensitive: bool (default False for words)
+      words: list[str] — whole-word matches removed
+      symbols: list[str] — removed (or replaced if in replacements)
+      letters: list[str] — single characters removed
+      substrings: list[str] — any occurrence removed
+      replacements: dict[str, str] — exact string → replacement (applied first)
+    """
+    if not text or not cfg:
+        return text or ""
+
+    out = text
+    case_sensitive = bool(cfg.get("case_sensitive", False))
+    flags = 0 if case_sensitive else re.IGNORECASE
+
+    replacements = cfg.get("replacements") or {}
+    if isinstance(replacements, dict):
+        # Longer keys first so multi-char sequences win over single chars
+        for src in sorted(replacements.keys(), key=lambda s: len(str(s)), reverse=True):
+            dst = replacements[src]
+            if src is None or src == "":
+                continue
+            if case_sensitive:
+                out = out.replace(str(src), str(dst))
+            else:
+                out = re.sub(re.escape(str(src)), str(dst), out, flags=re.IGNORECASE)
+
+    def _as_list(val: Any) -> List[str]:
+        if not val:
+            return []
+        if isinstance(val, str):
+            return [val]
+        return [str(x) for x in val if x is not None and str(x) != ""]
+
+    for sym in _as_list(cfg.get("symbols")):
+        if case_sensitive:
+            out = out.replace(sym, "")
+        else:
+            out = re.sub(re.escape(sym), "", out, flags=re.IGNORECASE)
+
+    for letter in _as_list(cfg.get("letters")):
+        if not letter:
+            continue
+        # Only strip single-character entries from letters list
+        ch = letter[0]
+        if case_sensitive:
+            out = out.replace(ch, "")
+        else:
+            out = re.sub(re.escape(ch), "", out, flags=re.IGNORECASE)
+
+    for sub in _as_list(cfg.get("substrings")):
+        if case_sensitive:
+            out = out.replace(sub, "")
+        else:
+            out = re.sub(re.escape(sub), "", out, flags=re.IGNORECASE)
+
+    for word in _as_list(cfg.get("words")):
+        # Whole-word style: word boundaries when the token is alphanumeric
+        if re.fullmatch(r"[\w']+", word, flags=re.UNICODE):
+            pattern = rf"\b{re.escape(word)}\b"
+        else:
+            pattern = re.escape(word)
+        out = re.sub(pattern, "", out, flags=flags)
+
+    # Collapse leftover whitespace / empty punctuation runs
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    out = re.sub(r" +([,.;:!?])", r"\1", out)
+    return out.strip()
+
+
 class DecisionEngine:
     def __init__(
         self,
@@ -40,6 +113,7 @@ class DecisionEngine:
         personality_state: dict,
         behaviour: dict,
         self_names: Optional[Set[str]] = None,
+        blacklist: Optional[Dict[str, Any]] = None,
     ):
         self.llm = llm
         self.gemini = llm
@@ -48,6 +122,7 @@ class DecisionEngine:
         self.anti_spam = anti_spam
         self.state = personality_state
         self.behaviour = behaviour
+        self.blacklist = blacklist or {}
         self._self_keys = {memory_key(n) for n in (self_names or set()) if n}
 
     def _is_own_player(self, msg: ChatMessage) -> bool:
@@ -100,6 +175,18 @@ class DecisionEngine:
         sep = self.behaviour.get("name_separator", ", ")
         return f"{name}{sep}{body}"
 
+    def _finalize_reply(self, msg: ChatMessage, body: str) -> str:
+        body = apply_blacklist(body or "", self.blacklist)
+        if not (body or "").strip():
+            body = random.choice(FALLBACKS)
+        reply = self._address_player(msg, body)
+        # Address prefix should not reintroduce banned symbols from the model body only;
+        # still scrub once more in case separator/name path is odd.
+        reply = apply_blacklist(reply, self.blacklist)
+        if not (reply or "").strip():
+            reply = random.choice(FALLBACKS)
+        return reply.strip()
+
     def decide_and_generate(self, msg: ChatMessage) -> Optional[str]:
         if not self.should_consider(msg):
             return None
@@ -108,7 +195,7 @@ class DecisionEngine:
 
         canned = self.triggers.check(msg, self.state["aggressiveness"])
         if canned:
-            reply = self._address_player(msg, canned)
+            reply = self._finalize_reply(msg, canned)
             self.anti_spam.record_reply(msg.player)
             self._store_exchange(msg, reply)
             return reply
@@ -116,7 +203,7 @@ class DecisionEngine:
         if msg.is_game_request and self.behaviour.get("reply_to_game_requests", True):
             if self.behaviour.get("game_request_use_canned", False):
                 pool = GAME_REQUEST_REPLIES.get(msg.game_request_kind) or GAME_REQUEST_REPLIES["other"]
-                reply = self._address_player(msg, random.choice(pool))
+                reply = self._finalize_reply(msg, random.choice(pool))
                 self.anti_spam.record_reply(msg.player)
                 self._store_exchange(msg, reply)
                 return reply
@@ -137,6 +224,19 @@ class DecisionEngine:
             extra += "\nThey mentioned you — reply to them directly."
         if msg.is_game_request:
             extra += f"\nLooks like a lobby/game request ({msg.game_request_kind or 'other'})."
+
+        # Hint the model away from blacklisted symbols/words (filter still enforces).
+        banned_hint_parts: List[str] = []
+        for key in ("symbols", "words", "substrings"):
+            items = self.blacklist.get(key) or []
+            if isinstance(items, list) and items:
+                sample = ", ".join(repr(x) for x in items[:12])
+                banned_hint_parts.append(f"{key}: {sample}")
+        if banned_hint_parts:
+            extra += (
+                "\nDo not use these banned characters/words in your reply: "
+                + "; ".join(banned_hint_parts)
+            )
 
         history = []
         for h in self.memory.get_context(msg.player)[-10:]:
@@ -172,7 +272,7 @@ class DecisionEngine:
             flags=re.I,
         ).strip()
 
-        reply = self._address_player(msg, body)
+        reply = self._finalize_reply(msg, body)
         self.anti_spam.record_reply(msg.player)
         self._store_exchange(msg, reply)
         return reply
