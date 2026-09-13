@@ -49,6 +49,8 @@ class Config(BaseModel):
     behaviour: Dict[str, Any] = Field(default_factory=dict)
     anti_spam: Dict[str, Any] = Field(default_factory=dict)
     memory: Dict[str, Any] = Field(default_factory=dict)
+    # Reply text filter: words / symbols / letters / substrings / replacements
+    blacklist: Dict[str, Any] = Field(default_factory=dict)
     triggers: list = Field(default_factory=list)
     canned_blocks: list = Field(default_factory=list)
     logging: Dict[str, Any] = Field(default_factory=dict)
