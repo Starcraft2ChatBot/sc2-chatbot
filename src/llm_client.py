@@ -2,12 +2,20 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, List, Optional
 
 logger = logging.getLogger("sc2_chatbot.llm")
 
 _DEFAULT_LOCAL_TIMEOUT = 120.0
 _DEFAULT_CLOUD_TIMEOUT = 60.0
+
+# Strip internal chain-of-thought wrappers some models emit
+_THINK_BLOCK_RE = re.compile(
+    r"<think>[\s\S]*?</think>",
+    flags=re.IGNORECASE,
+)
+_THINK_OPEN_RE = re.compile(r"<think>[\s\S]*$", flags=re.IGNORECASE)
 
 
 def _is_timeout_error(exc: BaseException) -> bool:
@@ -67,6 +75,74 @@ def _is_connection_error(exc: BaseException) -> bool:
             if _is_connection_error(nested):
                 return True
     return False
+
+
+def _clean_model_text(text: str) -> str:
+    """Remove think blocks / meta scaffolding; keep a short chat-style line if possible."""
+    if not text:
+        return ""
+    out = str(text)
+    out = _THINK_BLOCK_RE.sub("", out)
+    out = _THINK_OPEN_RE.sub("", out)
+    out = out.strip().strip('"').strip("'")
+
+    # Prefer text after common "final reply" markers
+    for marker in (
+        "final answer:",
+        "final reply:",
+        "reply:",
+        "response:",
+        "say:",
+        "output:",
+    ):
+        idx = out.lower().rfind(marker)
+        if idx >= 0:
+            candidate = out[idx + len(marker) :].strip()
+            if candidate:
+                out = candidate
+                break
+
+    # Drop pure planning dumps (keep last non-empty short-ish paragraph)
+    lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+    meta_prefixes = (
+        "thinking process",
+        "step ",
+        "step:",
+        "analyze",
+        "intent",
+        "strategy",
+        "user constraints",
+        "the model is",
+        "i need to",
+        "let me",
+        "first,",
+        "second,",
+        "third,",
+        "**",
+        "#",
+    )
+    chat_lines: List[str] = []
+    for ln in lines:
+        low = ln.lower()
+        if any(low.startswith(p) for p in meta_prefixes):
+            continue
+        if low.startswith("-") and ("intent" in low or "strategy" in low):
+            continue
+        chat_lines.append(ln)
+
+    if chat_lines:
+        # Prefer the last 1–2 substantive lines (SC2 chat is short)
+        picked = " ".join(chat_lines[-2:]).strip()
+        if len(picked) > 400:
+            picked = picked[:400].rsplit(" ", 1)[0]
+        return picked
+
+    # Fallback: last non-empty line if short enough to be a chat line
+    if lines:
+        last = lines[-1]
+        if len(last) <= 280 and not any(last.lower().startswith(p) for p in meta_prefixes):
+            return last
+    return ""
 
 
 class LLMClient:
@@ -312,7 +388,7 @@ class LLMClient:
                 )
 
             if text:
-                return text
+                return _clean_model_text(text) or text.strip()
 
             extra: dict[str, Any] = {}
             try:
@@ -322,15 +398,6 @@ class LLMClient:
                     c0 = cands[0]
                     fr = getattr(c0, "finish_reason", None)
                     extra["finish_reason"] = str(fr)
-                    safety = getattr(c0, "safety_ratings", None)
-                    if safety:
-                        extra["safety"] = str(safety)[:300]
-                    content = getattr(c0, "content", None)
-                    parts = getattr(content, "parts", None) if content else None
-                    extra["parts"] = len(parts) if parts is not None else 0
-                pf = getattr(response, "prompt_feedback", None)
-                if pf is not None:
-                    extra["prompt_feedback"] = str(pf)[:300]
             except Exception as de:
                 extra["diag_error"] = f"{type(de).__name__}: {de}"[:200]
 
@@ -346,7 +413,8 @@ class LLMClient:
 
         content = getattr(message, "content", None)
         if isinstance(content, str) and content.strip():
-            return content.strip()
+            cleaned = _clean_model_text(content)
+            return cleaned or content.strip()
         if isinstance(content, list):
             bits: List[str] = []
             for block in content:
@@ -362,7 +430,23 @@ class LLMClient:
                         bits.append(str(t))
             joined = " ".join(bits).strip()
             if joined:
-                return joined
+                cleaned = _clean_model_text(joined)
+                return cleaned or joined
+
+        # Thinking models (Qwen3 etc. via Ollama) often put text only in reasoning*
+        for attr in ("reasoning_content", "reasoning", "reasoning_details"):
+            val = getattr(message, attr, None)
+            if val is None:
+                continue
+            raw = str(val).strip()
+            if not raw:
+                continue
+            cleaned = _clean_model_text(raw)
+            if cleaned:
+                logger.info(
+                    "Using %s field (message.content was empty)", attr
+                )
+                return cleaned
 
         return ""
 
@@ -373,6 +457,14 @@ class LLMClient:
         history: Optional[List[dict]],
     ) -> str:
         try:
+            # Nudge thinking models to emit a normal chat line in content
+            system_prompt = (
+                f"{system_prompt}\n\n"
+                "IMPORTANT: Reply with only the in-game chat message text. "
+                "Do not output thinking, analysis, steps, or meta commentary. "
+                "One short chat line only."
+            )
+
             messages = [{"role": "system", "content": system_prompt}]
             for h in history or []:
                 role = h.get("role", "user")
@@ -393,11 +485,30 @@ class LLMClient:
                 "max_tokens": self.max_tokens,
             }
 
+            # Ollama thinking models: try to disable think mode when supported
+            if self.provider in ("ollama", "local") or (
+                self.base_url and "11434" in (self.base_url or "")
+            ):
+                create_kwargs["extra_body"] = {
+                    "think": False,
+                    "options": {"num_predict": self.max_tokens},
+                }
+
             try:
                 resp = self._openai.chat.completions.create(**create_kwargs)
             except Exception as e:
                 err_s = str(e).lower()
-                if (
+                # Retry without extra_body if server rejects unknown fields
+                if "extra_body" in create_kwargs and (
+                    "unknown" in err_s or "unexpected" in err_s or "invalid" in err_s
+                ):
+                    create_kwargs.pop("extra_body", None)
+                    try:
+                        resp = self._openai.chat.completions.create(**create_kwargs)
+                    except Exception as e2:
+                        self._log_transport_error(source="openai_compatible", exc=e2)
+                        return ""
+                elif (
                     not _is_timeout_error(e)
                     and not _is_connection_error(e)
                     and ("max_tokens" in err_s or "max_completion_tokens" in err_s)
@@ -445,10 +556,11 @@ class LLMClient:
                 for attr in ("reasoning_content", "reasoning", "reasoning_details"):
                     val = getattr(message, attr, None)
                     if val:
-                        extra[attr] = str(val)[:120]
+                        extra[attr] = str(val)[:160]
                         extra["hint"] = (
-                            "Reasoning field present but message.content empty — "
-                            "raise max_output_tokens or disable thinking mode"
+                            "Reasoning-only output could not be turned into a chat line — "
+                            "lower temperature, set max_output_tokens ~120–200, "
+                            "or use a non-thinking instruct model"
                         )
 
             usage = getattr(resp, "usage", None)
@@ -458,7 +570,10 @@ class LLMClient:
 
             fr = str(getattr(choice, "finish_reason", "") or "").lower()
             if fr in ("length", "max_tokens") and not extra.get("hint"):
-                extra["hint"] = "finish_reason=length — raise llm.max_output_tokens"
+                extra["hint"] = (
+                    "finish_reason=length — model spent all tokens on thinking; "
+                    "set max_output_tokens to 150–250 (not 1900) and temperature ~0.9"
+                )
 
             self._log_empty(source="openai_compatible", extra=extra)
             return ""
