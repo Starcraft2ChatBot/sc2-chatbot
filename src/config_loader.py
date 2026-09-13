@@ -21,6 +21,11 @@ class LLMConfig(BaseModel):
     temperature: float = 0.85
     max_output_tokens: int = 180
     base_url: Optional[str] = None
+    # Network timeouts (seconds). Local Ollama often needs longer read time.
+    request_timeout_sec: float = 60
+    connect_timeout_sec: float = 10
+    health_timeout_sec: float = 10
+    fail_cooldown_sec: float = 45
 
 
 class GeminiConfig(BaseModel):
@@ -60,9 +65,16 @@ class Config(BaseModel):
     sc2_stub: Dict[str, Any] = Field(default_factory=dict)
 
     def resolved_llm(self) -> LLMConfig:
-        if self.llm and (self.llm.api_key or self.llm.provider != "gemini"):
+        if self.llm is not None:
+            provider = (self.llm.provider or "gemini").lower().strip()
             key = self.llm.api_key or self.gemini.api_key or os.getenv("GEMINI_API_KEY", "")
-            return self.llm.model_copy(update={"api_key": key})
+            # Local Ollama / LM Studio do not need a real key
+            if provider in ("ollama", "local") and not key:
+                key = "ollama"
+            base = self.llm.base_url
+            if provider in ("ollama", "local") and not base:
+                base = "http://127.0.0.1:11434/v1"
+            return self.llm.model_copy(update={"api_key": key, "base_url": base, "provider": provider})
         return LLMConfig(
             provider="gemini",
             api_key=self.gemini.api_key or os.getenv("GEMINI_API_KEY", ""),
@@ -89,9 +101,13 @@ class Config(BaseModel):
         if not data.get("gemini", {}).get("api_key"):
             data.setdefault("gemini", {})["api_key"] = os.getenv("GEMINI_API_KEY", "")
         if data.get("llm") is not None and not data["llm"].get("api_key"):
-            data["llm"]["api_key"] = (
-                os.getenv("LLM_API_KEY")
-                or data.get("gemini", {}).get("api_key")
-                or os.getenv("GEMINI_API_KEY", "")
-            )
+            provider = str(data["llm"].get("provider") or "").lower()
+            if provider in ("ollama", "local"):
+                data["llm"]["api_key"] = os.getenv("LLM_API_KEY") or "ollama"
+            else:
+                data["llm"]["api_key"] = (
+                    os.getenv("LLM_API_KEY")
+                    or data.get("gemini", {}).get("api_key")
+                    or os.getenv("GEMINI_API_KEY", "")
+                )
         return cls(**data)
