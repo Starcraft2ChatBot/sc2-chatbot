@@ -103,6 +103,19 @@ def apply_blacklist(text: str, cfg: Optional[Dict[str, Any]]) -> str:
     return out.strip()
 
 
+def _favorite_words(cfg: Optional[Dict[str, Any]]) -> List[str]:
+    if not cfg:
+        return []
+    raw = cfg.get("words")
+    if raw is None and isinstance(cfg, list):
+        raw = cfg
+    if isinstance(raw, str):
+        return [raw] if raw.strip() else []
+    if not isinstance(raw, list):
+        return []
+    return [str(w).strip() for w in raw if w is not None and str(w).strip()]
+
+
 class DecisionEngine:
     def __init__(
         self,
@@ -114,6 +127,7 @@ class DecisionEngine:
         behaviour: dict,
         self_names: Optional[Set[str]] = None,
         blacklist: Optional[Dict[str, Any]] = None,
+        favorites: Optional[Dict[str, Any]] = None,
     ):
         self.llm = llm
         self.gemini = llm
@@ -123,6 +137,7 @@ class DecisionEngine:
         self.state = personality_state
         self.behaviour = behaviour
         self.blacklist = blacklist or {}
+        self.favorites = favorites or {}
         self._self_keys = {memory_key(n) for n in (self_names or set()) if n}
 
     def _is_own_player(self, msg: ChatMessage) -> bool:
@@ -187,6 +202,26 @@ class DecisionEngine:
             reply = random.choice(FALLBACKS)
         return reply.strip()
 
+    def _favorites_prompt_hint(self) -> str:
+        words = _favorite_words(self.favorites)
+        if not words:
+            return ""
+        intensity = str((self.favorites or {}).get("intensity", "medium") or "medium").lower()
+        sample = ", ".join(words[:40])
+        if intensity in ("strong", "high", "force"):
+            return (
+                f"\nStrongly prefer using these favorite words/phrases when they fit naturally "
+                f"(use at least one when possible): {sample}"
+            )
+        if intensity in ("soft", "low", "light"):
+            return (
+                f"\nWhen natural, lightly prefer vocabulary like: {sample}"
+            )
+        return (
+            f"\nPrefer using these favorite words/phrases often when they fit the reply "
+            f"(do not force them awkwardly): {sample}"
+        )
+
     def decide_and_generate(self, msg: ChatMessage) -> Optional[str]:
         if not self.should_consider(msg):
             return None
@@ -237,6 +272,8 @@ class DecisionEngine:
                 "\nDo not use these banned characters/words in your reply: "
                 + "; ".join(banned_hint_parts)
             )
+
+        extra += self._favorites_prompt_hint()
 
         history = []
         for h in self.memory.get_context(msg.player)[-10:]:
