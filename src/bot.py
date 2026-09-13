@@ -93,6 +93,7 @@ class SC2ChatBot:
             self.personality_state,
             self.config.behaviour,
             self_names=self.self_names,
+            blacklist=dict(self.config.blacklist or {}),
         )
 
         self.backend: ChatBackend = self._create_backend()
@@ -111,6 +112,9 @@ class SC2ChatBot:
         old_backend = self.config.chat_backend
         self.config = Config.load(self.config_path)
         self.triggers = TriggerEngine(self.config.triggers, self.config.canned_blocks)
+        self.engine.triggers = self.triggers
+        self.engine.behaviour = self.config.behaviour
+        self.engine.blacklist = dict(self.config.blacklist or {})
         p = self.config.personality
         self.personality_state["aggressiveness"] = p.aggressiveness
         self.personality_state["political_mode"] = p.political_mode
@@ -194,6 +198,7 @@ class SC2ChatBot:
         mem = self.config.memory or {}
         stub = self.config.sc2_stub or {}
         owner = self.config.owner or {}
+        bl = self.config.blacklist or {}
 
         key = (llm.api_key or "").strip()
         if not key:
@@ -205,6 +210,14 @@ class SC2ChatBot:
 
         topics = p.get("topics") or {}
         topics_on = [k for k, v in topics.items() if v] or ["(none)"]
+
+        def _bl_count(name: str) -> int:
+            v = bl.get(name)
+            if isinstance(v, dict):
+                return len(v)
+            if isinstance(v, list):
+                return len(v)
+            return 0
 
         lines = [
             "=" * 60,
@@ -228,6 +241,13 @@ class SC2ChatBot:
             f"  emoji_intensity:      {p.get('emoji_intensity')}",
             f"  sc2_reference_level:  {p.get('sc2_reference_level')}",
             f"  topics enabled:       {', '.join(str(t) for t in topics_on)}",
+            "",
+            "  -- Blacklist --",
+            f"  words:                {_bl_count('words')}",
+            f"  symbols:              {_bl_count('symbols')}",
+            f"  letters:              {_bl_count('letters')}",
+            f"  substrings:           {_bl_count('substrings')}",
+            f"  replacements:         {_bl_count('replacements')}",
             "",
             "  -- Behaviour --",
             f"  reply_probability:    {beh.get('reply_probability', 0.9)}",
