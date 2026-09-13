@@ -32,6 +32,28 @@ personality:
     memes: false
     personal: true
 
+# ====================== REPLY BLACKLIST ======================
+# Applied to every outbound AI/canned reply (after generation).
+# Order: replacements → symbols → letters → substrings → words.
+# Add more by appending list items, e.g. words: ["as an AI"] or symbols: ["…"]
+blacklist:
+  case_sensitive: false
+  words: []                 # whole words/phrases to remove, e.g. - "forbidden"
+  symbols:
+    - "—"                   # em dash (add more symbols on new lines with - "…")
+  letters: []               # single characters to strip, e.g. - "x"
+  substrings: []            # remove anywhere in the string, e.g. - "http"
+  replacements:             # map banned text → replacement (runs first)
+    "—": "-"                # em dash → normal hyphen
+
+# ====================== FAVORITE WORDS ======================
+# Nudges the model to use these words/phrases more when natural.
+# intensity: soft | medium | strong
+# Add favorites under words, e.g. - "bruh"
+favorites:
+  intensity: medium
+  words: []
+
 behaviour:
   min_reply_delay_sec: 0.35
   max_reply_delay_sec: 0.8
