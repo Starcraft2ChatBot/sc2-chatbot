@@ -94,6 +94,7 @@ class SC2ChatBot:
             self.config.behaviour,
             self_names=self.self_names,
             blacklist=dict(self.config.blacklist or {}),
+            favorites=dict(self.config.favorites or {}),
         )
 
         self.backend: ChatBackend = self._create_backend()
@@ -115,6 +116,7 @@ class SC2ChatBot:
         self.engine.triggers = self.triggers
         self.engine.behaviour = self.config.behaviour
         self.engine.blacklist = dict(self.config.blacklist or {})
+        self.engine.favorites = dict(self.config.favorites or {})
         p = self.config.personality
         self.personality_state["aggressiveness"] = p.aggressiveness
         self.personality_state["political_mode"] = p.political_mode
@@ -199,6 +201,7 @@ class SC2ChatBot:
         stub = self.config.sc2_stub or {}
         owner = self.config.owner or {}
         bl = self.config.blacklist or {}
+        fav = self.config.favorites or {}
 
         key = (llm.api_key or "").strip()
         if not key:
@@ -211,13 +214,17 @@ class SC2ChatBot:
         topics = p.get("topics") or {}
         topics_on = [k for k, v in topics.items() if v] or ["(none)"]
 
-        def _bl_count(name: str) -> int:
-            v = bl.get(name)
+        def _count(cfg: dict, name: str) -> int:
+            v = cfg.get(name)
             if isinstance(v, dict):
                 return len(v)
             if isinstance(v, list):
                 return len(v)
             return 0
+
+        fav_words = fav.get("words") if isinstance(fav.get("words"), list) else []
+        if not fav_words and isinstance(fav, list):
+            fav_words = fav
 
         lines = [
             "=" * 60,
@@ -243,11 +250,15 @@ class SC2ChatBot:
             f"  topics enabled:       {', '.join(str(t) for t in topics_on)}",
             "",
             "  -- Blacklist --",
-            f"  words:                {_bl_count('words')}",
-            f"  symbols:              {_bl_count('symbols')}",
-            f"  letters:              {_bl_count('letters')}",
-            f"  substrings:           {_bl_count('substrings')}",
-            f"  replacements:         {_bl_count('replacements')}",
+            f"  words:                {_count(bl, 'words')}",
+            f"  symbols:              {_count(bl, 'symbols')}",
+            f"  letters:              {_count(bl, 'letters')}",
+            f"  substrings:           {_count(bl, 'substrings')}",
+            f"  replacements:         {_count(bl, 'replacements')}",
+            "",
+            "  -- Favorites --",
+            f"  words:                {len(fav_words)}",
+            f"  intensity:            {fav.get('intensity', 'medium')}",
             "",
             "  -- Behaviour --",
             f"  reply_probability:    {beh.get('reply_probability', 0.9)}",
