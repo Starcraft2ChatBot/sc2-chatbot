@@ -31,6 +31,8 @@ The bot picks up messages from chat (including multi-line messages), runs them t
 - **AI progress indicator** — Rich spinner (`AI generating reply…`) appears only while the LLM is running; canned/trigger replies stay silent
 - **Multi-provider LLM** — Gemini by default; also OpenAI / OpenRouter / any OpenAI-compatible endpoint (including free models from [build.nvidia.com](https://build.nvidia.com/models))
 - **Rich personality controls** — aggressiveness, 7 reply modes (political + pure troll/ragebait), length, emoji, SC2 reference level, topic toggles
+- **Blacklist** — block words, symbols (e.g. em dashes), letters, substrings; optional replacements
+- **Favorites** — nudge the model to use preferred words/phrases more often
 - **Trigger / canned-response engine** — regex patterns, priority, cooldowns, per-player limits, channel filters
 - **Per-player conversation memory** (default 30 messages) with optional disk persistence
 - **Clan-tag stripping** — `[LG]Serral` → `Serral` for stable memory, mute, and owner keys
@@ -55,8 +57,8 @@ Any software that automatically reads chat from or injects keystrokes into the l
 1. A **Chat Backend** continuously yields new messages (OCR or simulated).
 2. Names are normalized (clan tags stripped); multi-line OCR text is joined; game-request patterns are flagged.
 3. The **Decision Engine** checks anti-spam, triggers, game-request handling, and memory.
-4. If an LLM reply is needed, a progress spinner is shown while the model generates text.
-5. The reply is sent after a short human-like delay (optional typos).
+4. If an LLM reply is needed, a progress spinner is shown while the model generates text (with blacklist / favorites guidance).
+5. The reply is filtered through the blacklist, then sent after a short human-like delay (optional typos).
 
 ### Two backends (same program / same portable build)
 
@@ -105,7 +107,7 @@ The bot’s voice is controlled by `personality.political_mode` in config (the f
 
 **Rough difference:** `troll` is a clown who wants a reaction; `ragebait` is colder and frames *them* as the problem. Political modes push ideology instead of pure mockery.
 
-Actual wording varies with the LLM, aggressiveness, memory, and length settings.
+Actual wording varies with the LLM, aggressiveness, memory, length, favorites, and blacklist settings.
 
 ### Other personality knobs
 
@@ -160,6 +162,56 @@ Examples:
 
 ---
 
+## Blacklist (block words & symbols)
+
+Stops the AI (and canned replies) from using specific words, symbols, letters, or substrings. Applied **after** generation so banned text cannot slip through.
+
+```yaml
+blacklist:
+  case_sensitive: false
+  words: []                 # whole words/phrases removed
+  symbols:                  # removed (unless replaced first)
+    - "—"                   # em dash
+    - "–"                   # en dash
+    - "“"
+    - "”"
+  letters: []               # single characters to strip
+  substrings: []            # removed anywhere in the string
+  replacements:             # applied first
+    "—": "-"
+    "–": "-"
+```
+
+**Order:** `replacements` → `symbols` → `letters` → `substrings` → `words`.
+
+The model is also told not to use banned items; the filter enforces it. If a reply becomes empty after filtering, a short fallback is used. Counts appear in the startup **ACTIVE CONFIG** log. `!reload` picks up changes.
+
+---
+
+## Favorites (prefer certain words)
+
+Nudges the model to use your preferred words/phrases **more often** when they fit naturally. This is prompt guidance (not a hard insert), so intensity controls how strongly it is pushed.
+
+```yaml
+favorites:
+  intensity: medium          # soft | medium | strong
+  words:
+    - "bruh"
+    - "lmao"
+    - "nah"
+    - "bet"
+```
+
+| Intensity | Effect |
+|-----------|--------|
+| `soft` | Light preference when natural |
+| `medium` | Prefer these often when they fit (default) |
+| `strong` | Strongly prefer; try to use at least one when possible |
+
+Favorites only affect **LLM** replies (not pure canned/trigger lines). They work together with the blacklist: favorite a slang word while still banning em dashes, etc.
+
+---
+
 ## Owner commands
 
 Only names listed under `owner.names` (and `sc2_stub.self_name`) can use these. Default prefix is `!`.
@@ -172,7 +224,7 @@ Only names listed under `owner.names` (and `sc2_stub.self_name`) can use these. 
 | `!unmute` | `!unmute PlayerName` | Unmute a player |
 | `!length` | `!length short` | Set reply length (`short` / `medium` / `long`) |
 | `!status` | `!status` | Show current aggro, mode, mute count |
-| `!reload` | `!reload` | Reload config (personality, triggers, etc.) |
+| `!reload` | `!reload` | Reload config (personality, triggers, blacklist, favorites, etc.) |
 
 Clan tags are ignored for matching, so `!mute [LG]Bob` and `!mute Bob` are the same.
 
@@ -366,6 +418,8 @@ All settings live in `config/config.yaml`:
 | `llm` / `gemini` | Provider, model, API key, temperature, max tokens |
 | `owner` | Owner names + command prefix |
 | `personality` | Aggressiveness, mode (`troll` / political / …), length, emoji, SC2 ref level, topics |
+| `blacklist` | Ban words, symbols, letters, substrings; replacements |
+| `favorites` | Preferred words/phrases + intensity (`soft` / `medium` / `strong`) |
 | `behaviour` | Reply delays, probability, typos, game-request handling, address-by-name |
 | `anti_spam` | Cooldowns, rate limits, mute list |
 | `memory` | Per-player history size + optional persistence path |
@@ -387,7 +441,7 @@ sc2_chatbot/
 ├── SC2ChatBot.spec             # PyInstaller
 ├── src/
 │   ├── bot.py                  # main loop, process message, send
-│   ├── decision_engine.py      # triggers → LLM → reply (+ progress spinner)
+│   ├── decision_engine.py      # triggers → LLM → blacklist/favorites → reply
 │   ├── llm_client.py           # Gemini + OpenAI-compatible
 │   ├── chat/
 │   │   ├── sc2_stub.py         # OCR + multi-line parse + keyboard send
