@@ -51,6 +51,8 @@ class Config(BaseModel):
     memory: Dict[str, Any] = Field(default_factory=dict)
     # Reply text filter: words / symbols / letters / substrings / replacements
     blacklist: Dict[str, Any] = Field(default_factory=dict)
+    # Preferred vocabulary the model should lean on when natural
+    favorites: Dict[str, Any] = Field(default_factory=dict)
     triggers: list = Field(default_factory=list)
     canned_blocks: list = Field(default_factory=list)
     logging: Dict[str, Any] = Field(default_factory=dict)
