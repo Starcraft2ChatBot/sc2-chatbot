@@ -63,6 +63,10 @@ class SC2ChatBot:
             temperature=llm_cfg.temperature,
             max_tokens=llm_cfg.max_output_tokens,
             base_url=llm_cfg.base_url,
+            request_timeout_sec=getattr(llm_cfg, "request_timeout_sec", 20.0) or 20.0,
+            connect_timeout_sec=getattr(llm_cfg, "connect_timeout_sec", 8.0) or 8.0,
+            health_timeout_sec=getattr(llm_cfg, "health_timeout_sec", 10.0) or 10.0,
+            fail_cooldown_sec=getattr(llm_cfg, "fail_cooldown_sec", 45.0) or 45.0,
         )
 
         self.triggers = TriggerEngine(self.config.triggers, self.config.canned_blocks)
@@ -124,7 +128,6 @@ class SC2ChatBot:
         self.personality_state["emoji_intensity"] = p.emoji_intensity
         self.personality_state["sc2_reference_level"] = getattr(p, "sc2_reference_level", 2)
         self.personality_state["topics"] = dict(p.topics)
-        # Keep command owner list in sync after reload
         self.commands.reload_owners(self.config)
         if self.config.chat_backend != old_backend:
             self.logger.warning("chat_backend changed — full restart required")
@@ -153,8 +156,6 @@ class SC2ChatBot:
     async def _process_message(self, msg: ChatMessage) -> None:
         is_self = memory_key(msg.player) in {memory_key(n) for n in self.self_names}
 
-        # Owner commands must run even when the speaker is the bot's own account
-        # (previously self messages were skipped before commands.handle ran).
         cmd_reply = self.commands.handle(msg)
         if cmd_reply:
             self.logger.info("RECV %s", msg)
@@ -192,7 +193,6 @@ class SC2ChatBot:
             await self.backend.send(text, **kwargs)
 
     def _log_config_summary(self) -> None:
-        """Print active config options to the console at startup."""
         llm = self.config.resolved_llm()
         p = self.personality_state
         beh = self.config.behaviour or {}
@@ -320,6 +320,23 @@ class SC2ChatBot:
         self.logger.warning(
             "REMINDER: Live SC2 automation may violate Blizzard Terms of Service."
         )
+
+        # Explicit LLM reachability probe before accepting chat traffic.
+        try:
+            ok = self.llm.health_check()
+            if ok:
+                self.logger.info("LLM preflight: reachable")
+            else:
+                self.logger.warning(
+                    "LLM preflight: NOT reachable (%s). "
+                    "Replies will be skipped until connectivity recovers. "
+                    "Check firewall/VPN/DNS/API key.",
+                    self.llm.last_fail_reason() or "unknown",
+                )
+        except Exception:
+            self.logger.exception(
+                "LLM preflight health_check failed — continuing; replies may be skipped"
+            )
 
         while self._running:
             try:
