@@ -73,7 +73,6 @@ def _check_chat_region(region: Any) -> bool:
         _fail("chat_region is too small (width/height < 40). Re-measure the chat box.")
         return False
 
-    # Common mistake: putting bottom-right X/Y as width/height
     if width > 1200 or height > 900:
         _warn(
             "width or height looks unusually large. "
@@ -92,31 +91,54 @@ def _check_chat_region(region: Any) -> bool:
     return True
 
 
-def _check_gemini(api_key: str, model_name: str) -> bool:
-    if not api_key or api_key.strip() in ("", "YOUR_KEY_HERE", "changeme"):
-        _fail("Gemini API key is missing. Set gemini.api_key in config.yaml")
+def _check_llm(config: Any) -> bool:
+    """Probe the configured LLM (Gemini or OpenAI-compatible) with a short timeout."""
+    try:
+        llm_cfg = config.resolved_llm()
+    except Exception as e:
+        _fail(f"Could not resolve LLM config: {e}")
         return False
-    if len(api_key) < 20:
-        _warn("Gemini API key looks unusually short")
+
+    key = (llm_cfg.api_key or "").strip()
+    if not key or key in ("YOUR_KEY_HERE", "changeme", "YOUR_API_KEY"):
+        _fail("LLM API key is missing. Set llm.api_key (or gemini.api_key) in config.yaml")
+        return False
+    if len(key) < 20:
+        _warn("LLM API key looks unusually short")
+
+    provider = (llm_cfg.provider or "gemini").lower()
+    model = llm_cfg.model or "gemini-2.0-flash"
+    print(f"  [INFO] LLM provider={provider} model={model}")
 
     try:
-        import google.generativeai as genai
+        from src.llm_client import LLMClient
 
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(model_name)
-        resp = model.generate_content(
-            "Reply with exactly: OK",
-            generation_config={"max_output_tokens": 8, "temperature": 0},
+        client = LLMClient(
+            provider=llm_cfg.provider,
+            api_key=llm_cfg.api_key,
+            model=llm_cfg.model,
+            temperature=0,
+            max_tokens=8,
+            base_url=llm_cfg.base_url,
+            request_timeout_sec=getattr(llm_cfg, "request_timeout_sec", 15) or 15,
+            connect_timeout_sec=getattr(llm_cfg, "connect_timeout_sec", 8) or 8,
+            health_timeout_sec=getattr(llm_cfg, "health_timeout_sec", 10) or 10,
         )
-        text = (getattr(resp, "text", None) or "").strip()
-        if text:
-            _ok(f"Gemini connected (model={model_name}, sample reply={text[:40]!r})")
+        ok = client.health_check()
+        if ok:
+            _ok(f"LLM reachable (provider={provider}, model={model})")
             return True
-        _warn("Gemini responded but returned empty text (check model name / quota)")
+        _fail(
+            f"LLM not reachable (provider={provider}, model={model}). "
+            "Check network, firewall, VPN, API key, and model name."
+        )
+        reason = client.last_fail_reason()
+        if reason:
+            _fail(f"Detail: {reason}")
         return False
     except Exception as e:
-        _fail(f"Gemini connection failed: {e}")
-        _fail("Check API key, billing/quota, and model name in config.yaml")
+        _fail(f"LLM connection check failed: {e}")
+        _fail("Check API key, billing/quota, firewall/VPN, and model name in config.yaml")
         return False
 
 
@@ -136,10 +158,8 @@ def run_startup_diagnostics(config: Any) -> None:
     backend = getattr(config, "chat_backend", "simulated")
     print(f"\n-- Backend: {backend} --")
 
-    print("\n-- Gemini --")
-    key = getattr(getattr(config, "gemini", None), "api_key", "") or ""
-    model = getattr(getattr(config, "gemini", None), "model", "gemini-2.0-flash")
-    _check_gemini(key, model)
+    print("\n-- LLM connectivity --")
+    _check_llm(config)
 
     if backend == "sc2_stub":
         print("\n-- Live SC2 / OCR packages --")
