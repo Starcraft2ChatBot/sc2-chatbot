@@ -31,6 +31,16 @@ GAME_REQUEST_REPLIES = {
 
 
 def apply_blacklist(text: str, cfg: Optional[Dict[str, Any]]) -> str:
+    """Remove or replace blacklisted words, symbols, letters, and substrings.
+
+    Config keys (all optional):
+      case_sensitive: bool (default False for words)
+      words: list[str] — whole-word matches removed
+      symbols: list[str] — removed (or replaced if in replacements)
+      letters: list[str] — single characters removed
+      substrings: list[str] — any occurrence removed
+      replacements: dict[str, str] — exact string → replacement (applied first)
+    """
     if not text or not cfg:
         return text or ""
 
@@ -40,6 +50,7 @@ def apply_blacklist(text: str, cfg: Optional[Dict[str, Any]]) -> str:
 
     replacements = cfg.get("replacements") or {}
     if isinstance(replacements, dict):
+        # Longer keys first so multi-char sequences win over single chars
         for src in sorted(replacements.keys(), key=lambda s: len(str(s)), reverse=True):
             dst = replacements[src]
             if src is None or src == "":
@@ -65,6 +76,7 @@ def apply_blacklist(text: str, cfg: Optional[Dict[str, Any]]) -> str:
     for letter in _as_list(cfg.get("letters")):
         if not letter:
             continue
+        # Only strip single-character entries from letters list
         ch = letter[0]
         if case_sensitive:
             out = out.replace(ch, "")
@@ -78,12 +90,14 @@ def apply_blacklist(text: str, cfg: Optional[Dict[str, Any]]) -> str:
             out = re.sub(re.escape(sub), "", out, flags=re.IGNORECASE)
 
     for word in _as_list(cfg.get("words")):
+        # Whole-word style: word boundaries when the token is alphanumeric
         if re.fullmatch(r"[\w']+", word, flags=re.UNICODE):
             pattern = rf"\b{re.escape(word)}\b"
         else:
             pattern = re.escape(word)
         out = re.sub(pattern, "", out, flags=flags)
 
+    # Collapse leftover whitespace / empty punctuation runs
     out = re.sub(r"[ \t]{2,}", " ", out)
     out = re.sub(r" +([,.;:!?])", r"\1", out)
     return out.strip()
@@ -163,6 +177,7 @@ class DecisionEngine:
         )
 
     def _address_name_chance(self) -> float:
+        """0.0 = never prefix name, 1.0 = always."""
         raw = self.behaviour.get("address_by_name_chance", 0.3)
         try:
             chance = float(raw)
@@ -171,6 +186,7 @@ class DecisionEngine:
         return max(0.0, min(1.0, chance))
 
     def _address_player(self, msg: ChatMessage, body: str) -> str:
+        # Master switch: false disables name prefix entirely
         if not self.behaviour.get("address_by_name", True):
             return body
 
@@ -194,6 +210,8 @@ class DecisionEngine:
         if not (body or "").strip():
             body = random.choice(FALLBACKS)
         reply = self._address_player(msg, body)
+        # Address prefix should not reintroduce banned symbols from the model body only;
+        # still scrub once more in case separator/name path is odd.
         reply = apply_blacklist(reply, self.blacklist)
         if not (reply or "").strip():
             reply = random.choice(FALLBACKS)
@@ -257,6 +275,7 @@ class DecisionEngine:
         if msg.is_game_request:
             extra += f"\nLooks like a lobby/game request ({msg.game_request_kind or 'other'})."
 
+        # Hint the model away from blacklisted symbols/words (filter still enforces).
         banned_hint_parts: List[str] = []
         for key in ("symbols", "words", "substrings"):
             items = self.blacklist.get(key) or []
@@ -281,50 +300,23 @@ class DecisionEngine:
             f"Write one in-character chat reply.{extra}"
         )
 
-        body = ""
-        skip_llm = False
-        if hasattr(self.llm, "is_likely_reachable") and not self.llm.is_likely_reachable():
-            logger.warning(
-                "LLM recently unreachable (%s) — running quick health_check before reply",
-                getattr(self.llm, "last_fail_reason", lambda: "")() or "unknown",
-            )
-            with Status(
-                "[yellow]Checking LLM connection…[/yellow]",
-                console=Console(stderr=True),
-                spinner="dots",
-            ):
-                ok = False
-                try:
-                    ok = bool(self.llm.health_check())
-                except Exception:
-                    logger.exception("LLM health_check raised")
-                    ok = False
-            if not ok:
-                skip_llm = True
-                logger.warning(
-                    "LLM still unreachable — skipping reply (no fallback)"
-                )
+        # Show progress only while the actual LLM call is running (the slow part).
+        # Canned / trigger replies above skip this entirely.
+        with Status(
+            "[cyan]AI generating reply…[/cyan]",
+            console=Console(stderr=True),
+            spinner="dots",
+        ):
+            body = self.llm.generate(system, user_prompt, history)
 
-        if not skip_llm:
-            with Status(
-                "[cyan]AI generating reply…[/cyan]",
-                console=Console(stderr=True),
-                spinner="dots",
-            ):
-                body = self.llm.generate(system, user_prompt, history)
-
-        # No filler fallbacks when the LLM is unreachable or returns empty
-        if not (body or "").strip():
-            logger.warning(
-                "LLM returned no text for %s — skipping reply (no fallback)",
-                label,
-            )
-            return None
+        if not body:
+            body = "what do you mean" if "?" in (msg.text or "") else random.choice(FALLBACKS)
 
         if random.random() < self.behaviour.get("typo_chance", 0.0):
             body = self._introduce_typo(body)
 
         body = body.strip().strip('"').strip("'")
+        # Strip accidental channel tags the model might echo
         body = re.sub(
             r"^\[?\d*\.?\s*(?:General|Arcade|Co-?op|All|Team|Whisper)\]?\s*",
             "",

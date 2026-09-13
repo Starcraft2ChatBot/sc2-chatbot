@@ -21,11 +21,6 @@ class LLMConfig(BaseModel):
     temperature: float = 0.85
     max_output_tokens: int = 180
     base_url: Optional[str] = None
-    # Fail-fast network settings (seconds). Prevents 1–2 min hangs on firewall drops.
-    request_timeout_sec: float = 20.0
-    connect_timeout_sec: float = 8.0
-    health_timeout_sec: float = 10.0
-    fail_cooldown_sec: float = 45.0
 
 
 class GeminiConfig(BaseModel):
