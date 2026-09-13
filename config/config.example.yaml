@@ -34,6 +34,30 @@ personality:
     memes: false
     personal: true
 
+# ====================== REPLY BLACKLIST ======================
+# Applied to every outbound AI/canned reply (after generation).
+# replacements run first; then symbols/letters/substrings are removed; then words.
+blacklist:
+  case_sensitive: false
+  # Whole words/phrases removed (word-boundary when alphanumeric)
+  words: []
+  # Characters/strings removed entirely
+  symbols:
+    - "—"    # em dash
+    - "–"    # en dash
+    - "“"
+    - "”"
+    - "‘"
+    - "’"
+  # Single letters to strip (use sparingly)
+  letters: []
+  # Anywhere-in-string removals
+  substrings: []
+  # Exact string → replacement (e.g. turn em dash into a normal hyphen)
+  replacements:
+    "—": "-"
+    "–": "-"
+
 behaviour:
   min_reply_delay_sec: 0.35
   max_reply_delay_sec: 0.8
