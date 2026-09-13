@@ -176,9 +176,24 @@ class DecisionEngine:
             )
         )
 
+    def _address_name_chance(self) -> float:
+        """0.0 = never prefix name, 1.0 = always."""
+        raw = self.behaviour.get("address_by_name_chance", 0.3)
+        try:
+            chance = float(raw)
+        except (TypeError, ValueError):
+            chance = 0.3
+        return max(0.0, min(1.0, chance))
+
     def _address_player(self, msg: ChatMessage, body: str) -> str:
+        # Master switch: false disables name prefix entirely
         if not self.behaviour.get("address_by_name", True):
             return body
+
+        chance = self._address_name_chance()
+        if chance <= 0.0 or random.random() > chance:
+            return body
+
         name = short_display_name(msg.display_name or msg.player)
         body = (body or "").strip()
         if not name:
