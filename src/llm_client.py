@@ -1,10 +1,14 @@
-"""Multi-provider LLM client (Gemini + OpenAI-compatible APIs)."""
+"""Multi-provider LLM client (Gemini + OpenAI-compatible + Ollama local)."""
 from __future__ import annotations
 
 import logging
 from typing import Any, List, Optional
 
 logger = logging.getLogger("sc2_chatbot.llm")
+
+# Local inference can be slow on first load / CPU
+_DEFAULT_LOCAL_TIMEOUT = 120.0
+_DEFAULT_CLOUD_TIMEOUT = 60.0
 
 
 def _is_timeout_error(exc: BaseException) -> bool:
@@ -25,7 +29,6 @@ def _is_timeout_error(exc: BaseException) -> bool:
         return True
     if any(n in msg for n in needles):
         return True
-    # Walk cause/context chain
     for attr in ("__cause__", "__context__"):
         nested = getattr(exc, attr, None)
         if nested is not None and nested is not exc:
@@ -68,7 +71,7 @@ def _is_connection_error(exc: BaseException) -> bool:
 
 
 class LLMClient:
-    """Unified generate() for Gemini or any OpenAI-compatible chat API."""
+    """Unified generate() for Gemini, OpenAI-compatible APIs, and local Ollama."""
 
     def __init__(
         self,
@@ -79,25 +82,68 @@ class LLMClient:
         temperature: float = 0.85,
         max_tokens: int = 180,
         base_url: str | None = None,
+        request_timeout_sec: float | None = None,
+        connect_timeout_sec: float | None = None,
     ):
         self.provider = (provider or "gemini").lower().strip()
-        self.api_key = api_key or ""
+        self.api_key = (api_key or "").strip()
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
-        self.base_url = base_url
+        self.base_url = (base_url or "").strip() or None
 
-        if not self.api_key:
-            raise ValueError("LLM api_key is required (set in config under llm or gemini)")
+        is_local = self.provider in ("ollama", "local") or (
+            self.base_url
+            and any(
+                h in self.base_url
+                for h in ("127.0.0.1", "localhost", "0.0.0.0")
+            )
+        )
+
+        if is_local and self.provider in ("openai", "openai_compatible", "custom"):
+            # Treat localhost OpenAI-compatible as local (LM Studio, etc.)
+            pass
+
+        if self.provider in ("ollama", "local"):
+            if not self.base_url:
+                self.base_url = "http://127.0.0.1:11434/v1"
+            if not self.api_key:
+                self.api_key = "ollama"
+            is_local = True
+
+        default_timeout = _DEFAULT_LOCAL_TIMEOUT if is_local else _DEFAULT_CLOUD_TIMEOUT
+        self.request_timeout_sec = float(
+            request_timeout_sec if request_timeout_sec is not None else default_timeout
+        )
+        self.connect_timeout_sec = float(
+            connect_timeout_sec if connect_timeout_sec is not None else 10.0
+        )
 
         if self.provider in ("gemini", "google"):
+            if not self.api_key:
+                raise ValueError("LLM api_key is required for Gemini")
             self._init_gemini()
-        elif self.provider in ("openai", "openai_compatible", "openrouter", "custom"):
+        elif self.provider in (
+            "openai",
+            "openai_compatible",
+            "openrouter",
+            "custom",
+            "ollama",
+            "local",
+        ):
+            if not self.api_key:
+                # OpenAI SDK requires a non-empty string; local servers ignore it
+                self.api_key = "ollama" if is_local else ""
+            if not self.api_key:
+                raise ValueError(
+                    "LLM api_key is required (set in config under llm). "
+                    "For Ollama use provider: ollama (key is optional)."
+                )
             self._init_openai()
         else:
             raise ValueError(
                 f"Unknown llm.provider={self.provider!r}. "
-                "Use: gemini | openai | openai_compatible | openrouter | custom"
+                "Use: gemini | openai | openai_compatible | openrouter | ollama | local | custom"
             )
 
     def _init_gemini(self) -> None:
@@ -113,18 +159,22 @@ class LLMClient:
             from openai import OpenAI
         except ImportError as e:
             raise ImportError(
-                "OpenAI-compatible provider requires:  pip install openai"
+                "OpenAI-compatible / Ollama provider requires:  pip install openai"
             ) from e
 
-        kwargs = {"api_key": self.api_key}
+        kwargs: dict[str, Any] = {
+            "api_key": self.api_key,
+            "timeout": self.request_timeout_sec,
+        }
         if self.base_url:
             kwargs["base_url"] = self.base_url
         self._openai = OpenAI(**kwargs)
         logger.info(
-            "LLM provider=%s model=%s base_url=%s",
+            "LLM provider=%s model=%s base_url=%s timeout=%.0fs",
             self.provider,
             self.model,
             self.base_url or "(default)",
+            self.request_timeout_sec,
         )
 
     def generate(
@@ -144,7 +194,6 @@ class LLMClient:
         source: str,
         extra: Optional[dict] = None,
     ) -> None:
-        """Structured diagnostics line for empty replies, timeouts, connection errors."""
         parts = [
             kind,
             f"provider={self.provider}",
@@ -176,7 +225,6 @@ class LLMClient:
         source: str,
         exc: BaseException,
     ) -> None:
-        """Classify timeout vs connection vs other API failures with hints."""
         err_type = type(exc).__name__
         err_msg = str(exc).replace("\n", " ")[:400]
         status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
@@ -186,11 +234,8 @@ class LLMClient:
             resp = getattr(exc, "response", None)
             if resp is not None:
                 status = status or getattr(resp, "status_code", None)
-                request_id = (
-                    getattr(resp, "headers", {}) or {}
-                ).get("x-request-id") or (getattr(resp, "headers", {}) or {}).get(
-                    "X-Request-Id"
-                )
+                headers = getattr(resp, "headers", None) or {}
+                request_id = headers.get("x-request-id") or headers.get("X-Request-Id")
                 try:
                     body = getattr(resp, "text", None) or getattr(resp, "content", None)
                     if body is not None:
@@ -213,43 +258,34 @@ class LLMClient:
 
         if _is_timeout_error(exc):
             extra["hint"] = (
-                "Connection/read timed out — provider slow or unreachable; "
-                "retry later, switch model/endpoint, or check network/VPN/firewall"
+                "Connection/read timed out — for Ollama try a smaller model, "
+                "raise llm.request_timeout_sec, or wait for model load"
             )
-            self._log_diag(
-                kind="LLM connection timeout",
-                source=source,
-                extra=extra,
-            )
+            self._log_diag(kind="LLM connection timeout", source=source, extra=extra)
             return
 
         if _is_connection_error(exc):
             extra["hint"] = (
-                "Could not reach LLM API — check network, DNS, base_url, "
-                "VPN/firewall, and that the provider is online"
+                "Could not reach LLM API — for Ollama ensure `ollama serve` is running "
+                "and base_url is http://127.0.0.1:11434/v1"
             )
-            self._log_diag(
-                kind="LLM connection error",
-                source=source,
-                extra=extra,
-            )
+            self._log_diag(kind="LLM connection error", source=source, extra=extra)
             return
 
-        # Rate limit / auth / other HTTP-style errors often surface here too
         msg_l = err_msg.lower()
         if status == 429 or "rate limit" in msg_l or "429" in msg_l:
-            extra["hint"] = (
-                "Rate limited (429) — wait and retry, slow anti-spam, "
-                "or switch model/provider"
-            )
+            extra["hint"] = "Rate limited (429) — wait and retry or switch model"
             self._log_diag(kind="LLM rate limit error", source=source, extra=extra)
             return
         if status in (401, 403) or "unauthorized" in msg_l or "invalid api" in msg_l:
-            extra["hint"] = "Auth failed — check llm.api_key and provider account"
+            extra["hint"] = "Auth failed — check llm.api_key (Ollama can use any dummy key)"
             self._log_diag(kind="LLM auth error", source=source, extra=extra)
             return
         if status == 404 or "not found" in msg_l:
-            extra["hint"] = "Model or endpoint not found — verify llm.model and base_url"
+            extra["hint"] = (
+                "Model or endpoint not found — run `ollama list` and set llm.model "
+                "to an exact name (e.g. qwen3.5:9b)"
+            )
             self._log_diag(kind="LLM not found error", source=source, extra=extra)
             return
 
@@ -289,7 +325,6 @@ class LLMClient:
             try:
                 text = (response.text or "").strip()
             except Exception as te:
-                # response.text can throw when candidates are blocked/empty
                 self._log_empty(
                     source="gemini",
                     extra={
@@ -301,7 +336,6 @@ class LLMClient:
             if text:
                 return text
 
-            # Diagnostics from candidates / finish reason / safety
             extra: dict[str, Any] = {}
             try:
                 cands = getattr(response, "candidates", None) or []
@@ -316,14 +350,6 @@ class LLMClient:
                     content = getattr(c0, "content", None)
                     parts = getattr(content, "parts", None) if content else None
                     extra["parts"] = len(parts) if parts is not None else 0
-                    if parts:
-                        snippets = []
-                        for p in parts[:3]:
-                            t = getattr(p, "text", None)
-                            if t:
-                                snippets.append(str(t)[:80])
-                        if snippets:
-                            extra["part_preview"] = " | ".join(snippets)
                 pf = getattr(response, "prompt_feedback", None)
                 if pf is not None:
                     extra["prompt_feedback"] = str(pf)[:300]
@@ -337,7 +363,6 @@ class LLMClient:
             return ""
 
     def _extract_openai_message_text(self, message: Any) -> str:
-        """Pull visible text from an OpenAI-style message (content / refusal / parts)."""
         if message is None:
             return ""
 
@@ -360,10 +385,6 @@ class LLMClient:
             joined = " ".join(bits).strip()
             if joined:
                 return joined
-
-        refusal = getattr(message, "refusal", None)
-        if isinstance(refusal, str) and refusal.strip():
-            return ""
 
         return ""
 
@@ -398,7 +419,6 @@ class LLMClient:
                 resp = self._openai.chat.completions.create(**create_kwargs)
             except Exception as e:
                 err_s = str(e).lower()
-                # Retry once with max_completion_tokens if API rejects max_tokens
                 if (
                     not _is_timeout_error(e)
                     and not _is_connection_error(e)
@@ -412,6 +432,7 @@ class LLMClient:
                         self._log_transport_error(source="openai_compatible", exc=e2)
                         return ""
                 else:
+                    self._log_transport_error(source="openai_compatible", exp=e) if False else None
                     self._log_transport_error(source="openai_compatible", exc=e)
                     return ""
 
@@ -422,7 +443,7 @@ class LLMClient:
                     extra={
                         "choices": 0,
                         "id": getattr(resp, "id", None),
-                        "hint": "API returned no choices (rate limit, filter, or bad model id)",
+                        "hint": "API returned no choices — check model name with `ollama list`",
                     },
                 )
                 return ""
@@ -444,52 +465,23 @@ class LLMClient:
                 raw_content = getattr(message, "content", None)
                 extra["content_type"] = type(raw_content).__name__
                 extra["content_repr"] = repr(raw_content)[:120]
-                refusal = getattr(message, "refusal", None)
-                if refusal:
-                    extra["refusal"] = str(refusal)[:200]
-                    extra["hint"] = "Model refused; content empty (safety/policy)"
-                for attr in (
-                    "reasoning_content",
-                    "reasoning",
-                    "reasoning_details",
-                ):
+                for attr in ("reasoning_content", "reasoning", "reasoning_details"):
                     val = getattr(message, attr, None)
                     if val:
                         extra[attr] = str(val)[:120]
                         extra["hint"] = (
-                            extra.get("hint")
-                            or "Reasoning field present but message.content empty "
-                            "— try a non-thinking chat model or higher max_tokens"
+                            "Reasoning field present but message.content empty — "
+                            "raise max_output_tokens or disable thinking mode"
                         )
-                tool_calls = getattr(message, "tool_calls", None)
-                if tool_calls:
-                    extra["tool_calls"] = len(tool_calls)
-                    extra["hint"] = (
-                        extra.get("hint")
-                        or "Model returned tool_calls instead of text"
-                    )
 
             usage = getattr(resp, "usage", None)
             if usage is not None:
                 extra["prompt_tokens"] = getattr(usage, "prompt_tokens", None)
                 extra["completion_tokens"] = getattr(usage, "completion_tokens", None)
-                extra["total_tokens"] = getattr(usage, "total_tokens", None)
-                details = getattr(usage, "completion_tokens_details", None)
-                if details is not None:
-                    rt = getattr(details, "reasoning_tokens", None)
-                    if rt:
-                        extra["reasoning_tokens"] = rt
-                        if not extra.get("hint"):
-                            extra["hint"] = (
-                                "Tokens spent on reasoning; visible content empty "
-                                "— raise max_output_tokens or disable thinking mode"
-                            )
 
             fr = str(getattr(choice, "finish_reason", "") or "").lower()
             if fr in ("length", "max_tokens") and not extra.get("hint"):
                 extra["hint"] = "finish_reason=length — raise llm.max_output_tokens"
-            elif fr in ("content_filter", "safety") and not extra.get("hint"):
-                extra["hint"] = "Content filtered by provider"
 
             self._log_empty(source="openai_compatible", extra=extra)
             return ""
