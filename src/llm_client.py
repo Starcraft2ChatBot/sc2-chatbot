@@ -6,7 +6,6 @@ from typing import Any, List, Optional
 
 logger = logging.getLogger("sc2_chatbot.llm")
 
-# Local inference can be slow on first load / CPU
 _DEFAULT_LOCAL_TIMEOUT = 120.0
 _DEFAULT_CLOUD_TIMEOUT = 60.0
 
@@ -94,15 +93,8 @@ class LLMClient:
 
         is_local = self.provider in ("ollama", "local") or (
             self.base_url
-            and any(
-                h in self.base_url
-                for h in ("127.0.0.1", "localhost", "0.0.0.0")
-            )
+            and any(h in self.base_url for h in ("127.0.0.1", "localhost", "0.0.0.0"))
         )
-
-        if is_local and self.provider in ("openai", "openai_compatible", "custom"):
-            # Treat localhost OpenAI-compatible as local (LM Studio, etc.)
-            pass
 
         if self.provider in ("ollama", "local"):
             if not self.base_url:
@@ -132,7 +124,6 @@ class LLMClient:
             "local",
         ):
             if not self.api_key:
-                # OpenAI SDK requires a non-empty string; local servers ignore it
                 self.api_key = "ollama" if is_local else ""
             if not self.api_key:
                 raise ValueError(
@@ -211,20 +202,10 @@ class LLMClient:
                 parts.append(f"{k}={v}")
         logger.warning("%s", " | ".join(parts))
 
-    def _log_empty(
-        self,
-        *,
-        source: str,
-        extra: Optional[dict] = None,
-    ) -> None:
+    def _log_empty(self, *, source: str, extra: Optional[dict] = None) -> None:
         self._log_diag(kind="LLM returned empty response", source=source, extra=extra)
 
-    def _log_transport_error(
-        self,
-        *,
-        source: str,
-        exc: BaseException,
-    ) -> None:
+    def _log_transport_error(self, *, source: str, exc: BaseException) -> None:
         err_type = type(exc).__name__
         err_msg = str(exc).replace("\n", " ")[:400]
         status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
@@ -245,10 +226,7 @@ class LLMClient:
         except Exception:
             pass
 
-        extra: dict[str, Any] = {
-            "error_type": err_type,
-            "error": err_msg,
-        }
+        extra: dict[str, Any] = {"error_type": err_type, "error": err_msg}
         if status is not None:
             extra["status_code"] = status
         if request_id:
@@ -432,7 +410,6 @@ class LLMClient:
                         self._log_transport_error(source="openai_compatible", exc=e2)
                         return ""
                 else:
-                    self._log_transport_error(source="openai_compatible", exp=e) if False else None
                     self._log_transport_error(source="openai_compatible", exc=e)
                     return ""
 
