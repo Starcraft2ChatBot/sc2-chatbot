@@ -9,7 +9,6 @@ from .names import memory_key, normalize_player_name
 
 logger = logging.getLogger("sc2_chatbot.commands")
 
-# Modes accepted by !prop (political + non-political troll modes)
 ALLOWED_MODES = {
     "neutral",
     "left",
@@ -20,7 +19,6 @@ ALLOWED_MODES = {
     "ragebait",
 }
 
-# OCR often misreads leading ! as |, i, I, l, 1, /, \
 _OCR_PREFIX_RE = re.compile(r"^[!！|iIl1/\\]+\s*")
 
 
@@ -35,7 +33,6 @@ class CommandHandler:
         self.reload_owners(config)
 
     def reload_owners(self, config: Config) -> None:
-        """Refresh owner name keys from config (owner.names + sc2_stub.self_name)."""
         self.config = config
         self.prefix = str(config.owner.get("command_prefix", "!") or "!")
         owners = {memory_key(n) for n in (config.owner.get("names") or []) if n}
@@ -49,28 +46,17 @@ class CommandHandler:
         return memory_key(player) in self.owners
 
     def _strip_prefix(self, text: str) -> Optional[str]:
-        """Return body after command prefix, or None if not a command."""
         t = (text or "").strip()
         if not t:
             return None
         if t.startswith(self.prefix):
             return t[len(self.prefix) :].lstrip()
-        # OCR-mangled prefix when configured prefix is !
         if self.prefix == "!" and _OCR_PREFIX_RE.match(t):
             body = _OCR_PREFIX_RE.sub("", t, count=1).lstrip()
-            # Only treat as command if the next token is a known command word
             first = (body.split(maxsplit=1)[0] if body else "").lower()
             known = {
-                "tone",
-                "aggro",
-                "prop",
-                "political",
-                "mode",
-                "mute",
-                "unmute",
-                "reload",
-                "status",
-                "length",
+                "tone", "aggro", "prop", "political", "mode",
+                "mute", "unmute", "reload", "status", "length",
             }
             if first in known:
                 return body
@@ -101,9 +87,15 @@ class CommandHandler:
             return f"Usage: {self.prefix}tone 1-10"
 
         if cmd in ("prop", "political", "mode"):
+            if self.state.get("custom_enabled"):
+                return (
+                    "Custom personality is ON (config). "
+                    "Set personality.custom_enabled: false to use prebuilt modes, then !reload."
+                )
             mode = arg.lower().strip()
             if mode in ALLOWED_MODES:
                 self.state["political_mode"] = mode
+                self.state["prebuilt_mode"] = mode
                 return f"Mode → {mode}"
             return f"Usage: {self.prefix}prop {'|'.join(sorted(ALLOWED_MODES))}"
 
@@ -124,9 +116,11 @@ class CommandHandler:
             return "Config reloaded"
 
         if cmd == "status":
+            custom = "on" if self.state.get("custom_enabled") else "off"
             return (
                 f"Aggro={self.state['aggressiveness']} "
                 f"Mode={self.state['political_mode']} "
+                f"Custom={custom} "
                 f"Muted={len(self.anti_spam.mute)}"
             )
 
