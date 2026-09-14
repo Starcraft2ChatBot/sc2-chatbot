@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import urllib.error
 import urllib.request
 from typing import Any, List, Optional
 
@@ -15,34 +14,25 @@ _DEFAULT_CLOUD_TIMEOUT = 60.0
 
 _THINK_BLOCK_RE = re.compile(r"<think>[\s\S]*?</think>", flags=re.IGNORECASE)
 _THINK_OPEN_RE = re.compile(r"<think>[\s\S]*$", flags=re.IGNORECASE)
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F300-\U0001F9FF"
+    "\U00002600-\U000027BF"
+    "\U0001FA00-\U0001FAFF"
+    "\U0000FE00-\U0000FE0F"
+    "\U0000200D"
+    "]+",
+    flags=re.UNICODE,
+)
 
 _META_MARKERS = (
-    "**priority",
-    "**format",
-    "**formatting",
-    "**constraint",
-    "**constraints",
-    "**length",
-    "**user input",
-    "priority:",
-    "formatting:",
-    "constraint:",
-    "constraints:",
-    "aggressiveness",
-    "emoji intensity",
-    "thinking process",
-    "do not use banned",
-    "banned character",
-    "internet shorthand",
-    "no trailing periods",
-    "single line only",
-    "lowercase/mixed",
-    "pivot to politics",
-    "propaganda bot",
-    "starcraft reference",
-    "as an ai",
-    "system prompt",
-    "roleplay",
+    "**priority", "**format", "**formatting", "**constraint", "**constraints",
+    "**length", "**user input", "priority:", "formatting:", "constraint:",
+    "constraints:", "aggressiveness", "emoji intensity", "thinking process",
+    "do not use banned", "banned character", "internet shorthand",
+    "no trailing periods", "single line only", "lowercase/mixed",
+    "pivot to politics", "propaganda bot", "starcraft reference",
+    "as an ai", "system prompt", "roleplay",
 )
 
 
@@ -59,7 +49,7 @@ def _is_timeout_error(exc: BaseException) -> bool:
         return True
     for attr in ("__cause__", "__context__"):
         nested = getattr(exc, attr, None)
-        if nested is not None and nested is not exc and _is_timeout_error(nested):
+        if nested is not None and nested is not exp and _is_timeout_error(nested):
             return True
     return False
 
@@ -102,12 +92,19 @@ def _looks_like_meta(text: str) -> bool:
     return False
 
 
+def _strip_emojis(text: str) -> str:
+    if not text:
+        return ""
+    return _EMOJI_RE.sub("", text)
+
+
 def _clean_model_text(text: str) -> str:
     if not text:
         return ""
     out = str(text)
     out = _THINK_BLOCK_RE.sub("", out)
     out = _THINK_OPEN_RE.sub("", out)
+    out = _strip_emojis(out)
     out = out.strip().strip('"').strip("'")
 
     for marker in (
@@ -135,6 +132,7 @@ def _clean_model_text(text: str) -> str:
 
     picked = " ".join(chat_lines[-2:]).strip()
     picked = re.sub(r"\*+", "", picked).strip()
+    picked = _strip_emojis(picked)
     if len(picked) > 280:
         picked = picked[:280].rsplit(" ", 1)[0]
     if _looks_like_meta(picked):
@@ -154,6 +152,7 @@ class LLMClient:
         base_url: str | None = None,
         request_timeout_sec: float | None = None,
         connect_timeout_sec: float | None = None,
+        think: bool = False,
     ):
         self.provider = (provider or "gemini").lower().strip()
         self.api_key = (api_key or "").strip()
@@ -161,6 +160,7 @@ class LLMClient:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.base_url = (base_url or "").strip() or None
+        self.think = bool(think)
 
         is_local = self.provider in ("ollama", "local") or (
             self.base_url
@@ -207,7 +207,7 @@ class LLMClient:
         genai.configure(api_key=self.api_key)
         self._genai = genai
         self._gemini_model = genai.GenerativeModel(self.model)
-        logger.info("LLM provider=gemini model=%s", self.model)
+        logger.info("LLM provider=gemini model=%s think=%s", self.model, self.think)
 
     def _init_openai(self) -> None:
         try:
@@ -219,8 +219,9 @@ class LLMClient:
             kwargs["base_url"] = self.base_url
         self._openai = OpenAI(**kwargs)
         logger.info(
-            "LLM provider=%s model=%s base_url=%s timeout=%.0fs",
-            self.provider, self.model, self.base_url or "(default)", self.request_timeout_sec,
+            "LLM provider=%s model=%s base_url=%s timeout=%.0fs think=%s",
+            self.provider, self.model, self.base_url or "(default)",
+            self.request_timeout_sec, self.think,
         )
 
     def _ollama_native_base(self) -> str:
@@ -249,7 +250,8 @@ class LLMClient:
     def _log_diag(self, *, kind: str, source: str, extra: Optional[dict] = None) -> None:
         parts = [
             kind, f"provider={self.provider}", f"model={self.model}",
-            f"source={source}", f"temperature={self.temperature}", f"max_tokens={self.max_tokens}",
+            f"source={source}", f"temperature={self.temperature}",
+            f"max_tokens={self.max_tokens}", f"think={self.think}",
         ]
         if self.base_url:
             parts.append(f"base_url={self.base_url}")
@@ -263,7 +265,11 @@ class LLMClient:
     def _log_empty(self, *, source: str, extra: Optional[dict] = None) -> None:
         self._log_diag(kind="LLM returned empty response", source=source, extra=extra)
 
-    def _log_transport_error(self, *, source: str, exc: BaseException) -> None:
+    def _log_transport_error(self, *, source: str, exp: BaseException = None, **kwargs) -> None:
+        # accept exc= for callers
+        exc = kwargs.get("exc") or exp
+        if exp is None and "exc" in kwargs:
+            exc = kwargs["exc"]
         err_type = type(exc).__name__
         err_msg = str(exc).replace("\n", " ")[:400]
         status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
@@ -275,11 +281,11 @@ class LLMClient:
             self._log_diag(kind="LLM connection timeout", source=source, extra=extra)
             return
         if _is_connection_error(exc):
-            extra["hint"] = "Could not reach Ollama — is ollama serve running?"
+            extra["hint"] = "Could not reach LLM — check network / ollama serve / base_url"
             self._log_diag(kind="LLM connection error", source=source, extra=extra)
             return
         if status == 404 or "not found" in err_msg.lower():
-            extra["hint"] = "Model not found — run ollama list and set llm.model exactly"
+            extra["hint"] = "Model not found — verify llm.model"
             self._log_diag(kind="LLM not found error", source=source, extra=extra)
             return
         extra["hint"] = "See error above"
@@ -297,7 +303,7 @@ class LLMClient:
             "content": (
                 f"{system_prompt}\n\n"
                 "OUTPUT RULES: Reply with ONE short in-game chat line only. "
-                "No markdown, no bullets, no lists, no analysis, no planning."
+                "No markdown, no bullets, no lists, no analysis, no planning, no emojis."
             ),
         }]
         for h in history or []:
@@ -313,7 +319,7 @@ class LLMClient:
             "model": self.model,
             "messages": messages,
             "stream": False,
-            "think": False,
+            "think": bool(self.think),
             "options": {"temperature": self.temperature, "num_predict": int(self.max_tokens)},
         }
         url = f"{self._ollama_native_base()}/api/chat"
@@ -325,7 +331,7 @@ class LLMClient:
             with urllib.request.urlopen(req, timeout=self.request_timeout_sec) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
         except Exception as e:
-            self._log_transport_error(source="ollama_native", exc=e)
+            self._log_transport_error(source="ollama_native", exp=e)
             return ""
 
         msg = (body or {}).get("message") or {}
@@ -336,12 +342,13 @@ class LLMClient:
         if text:
             return text
         if content and not _looks_like_meta(content):
-            return content[:280]
+            return _strip_emojis(content)[:280]
 
+        # Only use thinking field when think is enabled or content was empty
         if thinking:
             cleaned = _clean_model_text(thinking)
             if cleaned:
-                logger.info("Ollama native: using cleaned thinking as chat line")
+                logger.info("Ollama: using cleaned thinking/reasoning as chat line")
                 return cleaned
 
         self._log_empty(
@@ -349,7 +356,10 @@ class LLMClient:
             extra={
                 "content_repr": repr(content)[:120],
                 "thinking_len": len(thinking),
-                "hint": "Empty after think=false — set temperature 0.9, max_output_tokens 150, or try qwen2.5:7b",
+                "hint": (
+                    "Empty reply — try llm.think: false, temperature 0.9, "
+                    "max_output_tokens 150, or a non-thinking model"
+                ),
             },
         )
         return ""
@@ -380,11 +390,11 @@ class LLMClient:
                 self._log_empty(source="gemini", extra={"text_accessor_error": type(te).__name__})
             if text:
                 cleaned = _clean_model_text(text)
-                return cleaned or (text if not _looks_like_meta(text) else "")
+                return cleaned or (_strip_emojis(text) if not _looks_like_meta(text) else "")
             self._log_empty(source="gemini", extra={})
             return ""
         except Exception as e:
-            self._log_transport_error(source="gemini", exc=e)
+            self._log_transport_error(source="gemini", exp=e)
             return ""
 
     def _extract_openai_message_text(self, message: Any) -> str:
@@ -396,7 +406,7 @@ class LLMClient:
             if cleaned:
                 return cleaned
             if not _looks_like_meta(content):
-                return content.strip()[:280]
+                return _strip_emojis(content.strip())[:280]
             return ""
         if isinstance(content, list):
             bits: List[str] = []
@@ -417,7 +427,7 @@ class LLMClient:
                 if cleaned:
                     return cleaned
                 if not _looks_like_meta(joined):
-                    return joined[:280]
+                    return _strip_emojis(joined)[:280]
         for attr in ("reasoning_content", "reasoning", "reasoning_details", "thinking"):
             val = getattr(message, attr, None)
             if not val:
@@ -435,7 +445,7 @@ class LLMClient:
             system_prompt = (
                 f"{system_prompt}\n\n"
                 "OUTPUT: one short in-game chat message only. "
-                "No markdown, no bullets, no analysis, no constraint lists."
+                "No markdown, no bullets, no analysis, no constraint lists, no emojis."
             )
             messages = [{"role": "system", "content": system_prompt}]
             for h in history or []:
@@ -452,7 +462,7 @@ class LLMClient:
                 "messages": messages,
                 "temperature": self.temperature,
                 "max_tokens": self.max_tokens,
-                "extra_body": {"think": False},
+                "extra_body": {"think": bool(self.think)},
             }
             try:
                 resp = self._openai.chat.completions.create(**create_kwargs)
@@ -463,7 +473,7 @@ class LLMClient:
                     try:
                         resp = self._openai.chat.completions.create(**create_kwargs)
                     except Exception as e2:
-                        self._log_transport_error(source="openai_compatible", exc=e2)
+                        self._log_transport_error(source="openai_compatible", exp=e2)
                         return ""
                 elif "max_tokens" in err_s or "max_completion_tokens" in err_s:
                     create_kwargs.pop("max_tokens", None)
@@ -471,10 +481,10 @@ class LLMClient:
                     try:
                         resp = self._openai.chat.completions.create(**create_kwargs)
                     except Exception as e2:
-                        self._log_transport_error(source="openai_compatible", exc=e2)
+                        self._log_transport_error(source="openai_compatible", exp=e2)
                         return ""
                 else:
-                    self._log_transport_error(source="openai_compatible", exc=e)
+                    self._log_transport_error(source="openai_compatible", exp=e)
                     return ""
 
             choices = getattr(resp, "choices", None) or []
@@ -488,12 +498,12 @@ class LLMClient:
                 source="openai_compatible",
                 extra={
                     "finish_reason": getattr(choices[0], "finish_reason", None),
-                    "hint": "No usable chat line — temperature 0.9, max_output_tokens 150, or qwen2.5:7b",
+                    "hint": "No usable chat line — set llm.think: false and max_output_tokens ~150",
                 },
             )
             return ""
         except Exception as e:
-            self._log_transport_error(source="openai_compatible", exc=e)
+            self._log_transport_error(source="openai_compatible", exp=e)
             return ""
 
 
@@ -504,5 +514,5 @@ class GeminiClient(LLMClient):
     ):
         super().__init__(
             provider="gemini", api_key=api_key, model=model,
-            temperature=temperature, max_tokens=max_tokens,
+            temperature=temperature, max_tokens=max_tokens, think=False,
         )
