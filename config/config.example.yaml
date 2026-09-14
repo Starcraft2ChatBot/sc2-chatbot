@@ -1,16 +1,4 @@
 # ====================== AI / LLM ======================
-# Cloud example (Gemini):
-#   provider: gemini
-#   api_key: YOUR_KEY
-#   model: gemini-2.0-flash
-#
-# Local Ollama (qwen3.5:9b etc.):
-#   provider: ollama
-#   api_key: ollama
-#   model: qwen3.5:9b
-#   base_url: http://127.0.0.1:11434/v1
-#   think: false
-#   request_timeout_sec: 120
 llm:
   provider: "gemini"
   api_key: "YOUR_API_KEY"
@@ -18,9 +6,6 @@ llm:
   temperature: 0.9
   max_output_tokens: 120
   base_url: null
-  # Thinking / chain-of-thought for all models that support it:
-  #   false = disable thinking (recommended for fast SC2 chat, esp. Qwen3 on Ollama)
-  #   true  = allow thinking (slower; may help complex answers on some models)
   think: false
   request_timeout_sec: 60
   connect_timeout_sec: 10
@@ -39,11 +24,16 @@ owner:
     - "YourInGameName"
   command_prefix: "!"
 
+# ====================== PERSONALITY ======================
+# Priority rules:
+#   custom_enabled: true  + non-empty custom_prompt → mode becomes "custom"
+#     (all prebuilt modes ignored: troll, propaganda_*, left, right, …)
+#   custom_enabled: false → uses political_mode as usual
 personality:
   aggressiveness: 8
-  political_mode: "troll"
+  political_mode: "troll"             # used only when custom_enabled is false
   response_length: "medium"
-  emoji_intensity: 0              # emojis are always disabled in code
+  emoji_intensity: 0
   sc2_reference_level: 0
   topics:
     politics: true
@@ -51,6 +41,12 @@ personality:
     in_game_strategy: false
     memes: false
     personal: true
+  custom_enabled: false
+  custom_prompt: ""
+  # Example:
+  # custom_enabled: true
+  # custom_prompt: |
+  #   You are a chill lobby chatter. Short, human replies. Mild sarcasm only.
 
 blacklist:
   case_sensitive: false
