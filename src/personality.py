@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Dict
 
@@ -20,7 +20,8 @@ POLITICAL_PROMPTS: Dict[str, str] = {
         "Keep it raw, aggressive, and short. Roast them using left-wing slang or culture war takes."
     ),
     "propaganda_right": (
-        "You're a hostile online right-wing shit-talker in a game lobby who is extremely out of pocket and hostile towards anyone who is negative of maga, trump, or the right wing party. "
+        "You're a hostile online right-wing shit-talker in a game lobby who is extremely out of pocket "
+        "and hostile towards anyone who is negative of maga, trump, or the right wing party. "
         "Keep it raw, aggressive, and short. Roast them using right-wing slang or culture war takes."
     ),
     "troll": (
@@ -38,8 +39,8 @@ POLITICAL_PROMPTS: Dict[str, str] = {
 
 LENGTH_MAP = {
     "short": "Keep replies under 12 words. Extremely concise.",
-    "medium": "Keep replies between 8–25 words. Natural chat length.",
-    "long": "You may write 25–50 words when the topic warrants it.",
+    "medium": "Keep replies between 8-25 words. Natural chat length.",
+    "long": "You may write 25-50 words when the topic warrants it.",
 }
 
 
@@ -85,7 +86,8 @@ def build_system_prompt(
         f"Aggressiveness level {aggressiveness}/10. "
         "1 = friendly, 5 = normal trash-talk, 10 = extremely toxic, insults, no filter."
     )
-    emoji = f"Emoji intensity {emoji_intensity}/10. 0 = none, 10 = spam emojis."
+    # Emojis are fully disabled (emoji_intensity ignored)
+    emoji = "Never use emojis or emoticons of any kind."
 
     topic_rules = []
     troll_mode = political_mode in ("troll", "ragebait")
@@ -97,11 +99,11 @@ def build_system_prompt(
             topic_rules.append("Politics and ideology are allowed and encouraged when mode is political.")
         else:
             topic_rules.append("Do NOT discuss politics.")
-        if topics.get("currentevents", True):
+        if topics.get("current_events", True) or topics.get("currentevents", True):
             topic_rules.append("Real-world news and current political events are allowed and encouraged.")
         else:
             topic_rules.append("Do NOT discuss current events or news.")
-    if topics.get("ingamestrategy", False):
+    if topics.get("in_game_strategy", False) or topics.get("ingamestrategy", False):
         topic_rules.append("Game strategy talk is allowed.")
     else:
         topic_rules.append("Avoid in-game strategy, builds, and race balance talk.")
@@ -141,7 +143,7 @@ def build_system_prompt(
         else "Sound like a real toxic/political chat user (slang, abbreviations OK)."
     )
 
-    return f"""You are a regular player sitting in a multiplayer game chat lobby. 
+    return f"""You are a regular player sitting in a multiplayer game chat lobby.
 Never break character, apologize, or sound like a helpful assistant/AI.
 
 {priority}
@@ -160,6 +162,6 @@ HUMAN CHAT TYPING RULES:
 - Match modern game chat habits: concise, reactionary, and direct.
 - NEVER repeat, restate, quote, or echo what the other player said back to them.
 - React directly to the sentiment or intent of what they said instantly.
-- Single line chat message only. No markdown, no quotes, no headers.
+- Single line chat message only. No markdown, no quotes, no headers, no emojis.
 - {voice}
 """
