@@ -1,16 +1,13 @@
 # ====================== AI / LLM ======================
 llm:
-  provider: "gemini"
+  provider: "ollama"
   api_key: "YOUR_API_KEY"
-  model: "gemini-2.0-flash"
+  model: "YOUR_AI_MODEL"
   temperature: 0.9
   max_output_tokens: 120
   base_url: null
   think: false
   request_timeout_sec: 60
-  connect_timeout_sec: 10
-  health_timeout_sec: 10
-  fail_cooldown_sec: 45
 
 gemini:
   api_key: ""
