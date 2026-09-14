@@ -21,6 +21,9 @@ class LLMConfig(BaseModel):
     temperature: float = 0.85
     max_output_tokens: int = 180
     base_url: Optional[str] = None
+    # When false (default), disable chain-of-thought / thinking for all providers that support it.
+    # When true, allow thinking models to reason (Ollama think=true, extra_body, etc.).
+    think: bool = False
     # Network timeouts (seconds). Local Ollama often needs longer read time.
     request_timeout_sec: float = 60
     connect_timeout_sec: float = 10
@@ -39,8 +42,8 @@ class PersonalityConfig(BaseModel):
     aggressiveness: int = Field(5, ge=1, le=10)
     political_mode: str = "neutral"
     response_length: str = "medium"
-    emoji_intensity: int = Field(3, ge=0, le=10)
-    # 0 = never mention SC2/game; 10 = full game nerd
+    # Kept for backward compat; emojis are always disabled in prompts/output.
+    emoji_intensity: int = Field(0, ge=0, le=10)
     sc2_reference_level: int = Field(2, ge=0, le=10)
     topics: Dict[str, bool] = Field(default_factory=dict)
     channel_overrides: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
@@ -54,9 +57,7 @@ class Config(BaseModel):
     behaviour: Dict[str, Any] = Field(default_factory=dict)
     anti_spam: Dict[str, Any] = Field(default_factory=dict)
     memory: Dict[str, Any] = Field(default_factory=dict)
-    # Reply text filter: words / symbols / letters / substrings / replacements
     blacklist: Dict[str, Any] = Field(default_factory=dict)
-    # Preferred vocabulary the model should lean on when natural
     favorites: Dict[str, Any] = Field(default_factory=dict)
     triggers: list = Field(default_factory=list)
     canned_blocks: list = Field(default_factory=list)
@@ -68,13 +69,14 @@ class Config(BaseModel):
         if self.llm is not None:
             provider = (self.llm.provider or "gemini").lower().strip()
             key = self.llm.api_key or self.gemini.api_key or os.getenv("GEMINI_API_KEY", "")
-            # Local Ollama / LM Studio do not need a real key
             if provider in ("ollama", "local") and not key:
                 key = "ollama"
             base = self.llm.base_url
             if provider in ("ollama", "local") and not base:
                 base = "http://127.0.0.1:11434/v1"
-            return self.llm.model_copy(update={"api_key": key, "base_url": base, "provider": provider})
+            return self.llm.model_copy(
+                update={"api_key": key, "base_url": base, "provider": provider}
+            )
         return LLMConfig(
             provider="gemini",
             api_key=self.gemini.api_key or os.getenv("GEMINI_API_KEY", ""),
