@@ -21,10 +21,7 @@ class LLMConfig(BaseModel):
     temperature: float = 0.85
     max_output_tokens: int = 180
     base_url: Optional[str] = None
-    # When false (default), disable chain-of-thought / thinking for all providers that support it.
-    # When true, allow thinking models to reason (Ollama think=true, extra_body, etc.).
     think: bool = False
-    # Network timeouts (seconds). Local Ollama often needs longer read time.
     request_timeout_sec: float = 60
     connect_timeout_sec: float = 10
     health_timeout_sec: float = 10
@@ -42,11 +39,14 @@ class PersonalityConfig(BaseModel):
     aggressiveness: int = Field(5, ge=1, le=10)
     political_mode: str = "neutral"
     response_length: str = "medium"
-    # Kept for backward compat; emojis are always disabled in prompts/output.
     emoji_intensity: int = Field(0, ge=0, le=10)
     sc2_reference_level: int = Field(2, ge=0, le=10)
     topics: Dict[str, bool] = Field(default_factory=dict)
     channel_overrides: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    # Custom personality: when enabled, replaces all prebuilt modes (political_mode ignored).
+    custom_enabled: bool = False
+    # Free-text personality description used when custom_enabled is true.
+    custom_prompt: str = ""
 
 
 class Config(BaseModel):
