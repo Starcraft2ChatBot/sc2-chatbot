@@ -1,22 +1,4 @@
 # ====================== AI / LLM ======================
-# Cloud (Gemini):
-#   provider: gemini
-#   api_key: YOUR_KEY
-#   model: gemini-2.0-flash
-#
-# Local Ollama:
-#   provider: ollama
-#   api_key: ollama
-#   model: qwen3.5:9b          # exact name from `ollama list`
-#   base_url: http://127.0.0.1:11434/v1
-#   think: false
-#   request_timeout_sec: 120
-#
-# NVIDIA / OpenRouter / other OpenAI-compatible:
-#   provider: openai_compatible
-#   api_key: YOUR_KEY
-#   model: meta/llama-3.3-70b-instruct
-#   base_url: https://integrate.api.nvidia.com/v1
 llm:
   provider: "gemini"
   api_key: "YOUR_API_KEY"
@@ -24,11 +6,7 @@ llm:
   temperature: 0.9
   max_output_tokens: 120
   base_url: null
-  # Thinking / chain-of-thought (all models that support it):
-  #   false = disable (recommended for fast SC2 chat, especially Qwen3 on Ollama)
-  #   true  = allow thinking (slower; may help complex answers)
   think: false
-  # Seconds to wait for a full LLM reply (raise for slow local models)
   request_timeout_sec: 60
   connect_timeout_sec: 10
   health_timeout_sec: 10
@@ -47,37 +25,47 @@ owner:
   command_prefix: "!"
 
 # ====================== PERSONALITY ======================
+# How modes work:
+#   - If custom_enabled is true AND custom_prompt is non-empty:
+#       effective mode becomes "custom" and ALL prebuilt modes are ignored.
+#   - If custom_enabled is false (or prompt is empty):
+#       uses political_mode (neutral|left|right|propaganda_*|troll|ragebait).
+#   - !prop cannot change prebuilt mode while custom is on; turn custom off + !reload.
 personality:
-  aggressiveness: 8                       # 1–10
-  # Modes: neutral|left|right|propaganda_left|propaganda_right|troll|ragebait
+  aggressiveness: 8
+  # Used only when custom_enabled is false
   political_mode: "propaganda_left"
-  response_length: "medium"               # short|medium|long
-  emoji_intensity: 0                      # emojis are always disabled in code
-  sc2_reference_level: 0                  # 0 = never mention SC2; 10 = full game talk
+  response_length: "medium"
+  emoji_intensity: 0
+  sc2_reference_level: 0
   topics:
     politics: true
     current_events: true
     in_game_strategy: false
     memes: false
     personal: true
+  # Custom personality (takes priority over political_mode when enabled)
+  custom_enabled: false
+  custom_prompt: ""
+  # Example when enabling custom:
+  # custom_enabled: true
+  # custom_prompt: |
+  #   You are a chill older gamer who talks like a regular person in lobby chat.
+  #   Short replies, mild sarcasm, never lecture. No AI vibes.
 
-# ====================== REPLY BLACKLIST ======================
-# Applied to every outbound AI/canned reply (after generation).
-# Order: replacements → symbols → letters → substrings → words.
 blacklist:
   case_sensitive: false
-  words: []                 # e.g. - "as an AI"
+  words: []
   symbols:
-    - "—"                   # em dash
+    - "—"
   letters: []
   substrings: []
   replacements:
     "—": "-"
 
-# ====================== FAVORITE WORDS ======================
 favorites:
-  intensity: medium         # soft | medium | strong
-  words: []                 # e.g. - "bruh"
+  intensity: medium
+  words: []
 
 behaviour:
   min_reply_delay_sec: 0.35
@@ -89,7 +77,6 @@ behaviour:
   reply_to_game_requests: false
   game_request_use_canned: false
   address_by_name: true
-  # How often to prefix the player name: 0.0 = never, 1.0 = always, 0.3 ≈ 30%
   address_by_name_chance: 0.3
   name_separator: ", "
 
