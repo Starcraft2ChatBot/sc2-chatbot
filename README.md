@@ -2,7 +2,7 @@
 
 **Educational / research project only.**
 
-A modular StarCraft 2 **chat-only** bot that reads lobby/game chat, decides when to reply, and responds with a configurable AI personality. Supports Google Gemini and OpenAI-compatible providers (including free models).
+A modular StarCraft 2 **chat-only** bot that reads lobby/game chat, decides when to reply, and responds with a configurable AI personality. Supports Google Gemini, OpenAI-compatible cloud APIs (NVIDIA, OpenRouter, etc.), and **local models via Ollama**.
 
 ---
 
@@ -10,7 +10,7 @@ A modular StarCraft 2 **chat-only** bot that reads lobby/game chat, decides when
 
 <img width="845" height="720" alt="Console output example" src="https://github.com/user-attachments/assets/5fa59b94-c6bb-49ff-8e62-ca2e132bb43d" />
 
-Live console shows `RECV` for incoming chat, `SEND` for replies, owner command results, and a transient **AI generating reply…** spinner while the model is thinking (so you can see why some responses take longer than others).
+Live console shows `RECV` for incoming chat, `SEND` for replies, owner command results, a startup **ACTIVE CONFIG** dump, and a transient **AI generating reply…** spinner while the model is running (so you can see why some responses take longer than others).
 
 ---
 
@@ -20,6 +20,8 @@ Live console shows `RECV` for incoming chat, `SEND` for replies, owner command r
 
 The bot picks up messages from chat (including multi-line messages), runs them through anti-spam / triggers / personality, calls the LLM when needed, then types or pastes the reply back into StarCraft II after a short human-like delay.
 
+If the model returns empty or only planning/meta text, **no reply is sent** (no canned fallback lines).
+
 ---
 
 ## Features
@@ -28,19 +30,26 @@ The bot picks up messages from chat (including multi-line messages), runs them t
   - `simulated` — console only (safe for development)
   - `sc2_stub` — live SC2 via OCR + keyboard (high ToS risk)
 - **Multi-line chat support** — long SC2 messages that wrap under the `[1. General] Name:` header are joined into one full message before being sent to the AI
-- **AI progress indicator** — Rich spinner (`AI generating reply…`) appears only while the LLM is running; canned/trigger replies stay silent
-- **Multi-provider LLM** — Gemini by default; also OpenAI / OpenRouter / any OpenAI-compatible endpoint (including free models from [build.nvidia.com](https://build.nvidia.com/models))
-- **Rich personality controls** — aggressiveness, 7 reply modes (political + pure troll/ragebait), length, emoji, SC2 reference level, topic toggles
+- **AI progress indicator** — Rich spinner (`AI generating reply…`) while the LLM runs; canned/trigger replies stay silent
+- **Multi-provider LLM**
+  - Gemini
+  - OpenAI-compatible (OpenRouter, NVIDIA [build.nvidia.com](https://build.nvidia.com/models), DeepSeek, LM Studio, …)
+  - **Local Ollama** (`provider: ollama`, e.g. `qwen3.5:9b`)
+- **`llm.think` toggle** — enable or disable chain-of-thought for all models that support it (recommended **off** for fast lobby chat)
+- **Timeouts & diagnostics** — configurable request/connect timeouts; structured logs for empty replies, timeouts, connection errors, and missing models
+- **Rich personality controls** — aggressiveness, 7 modes (political + troll/ragebait), length, SC2 reference level, topic toggles
+- **Emojis disabled** — prompts and output strip emojis entirely (`emoji_intensity` is ignored)
 - **Blacklist** — block words, symbols (e.g. em dashes), letters, substrings; optional replacements
-- **Favorites** — nudge the model to use preferred words/phrases more often
-- **Trigger / canned-response engine** — regex patterns, priority, cooldowns, per-player limits, channel filters
+- **Favorites** — nudge preferred words/phrases
+- **Occasional name addressing** — `address_by_name` + `address_by_name_chance` (0.0–1.0)
+- **Trigger / canned-response engine** — regex, priority, cooldowns, channel filters
 - **Per-player conversation memory** (default 30 messages) with optional disk persistence
-- **Clan-tag stripping** — `[LG]Serral` → `Serral` for stable memory, mute, and owner keys
-- **Game-request detection** — `[1v1]`, `[2v2]`, `[host]`, `[lfg]`, etc. (optional canned replies)
+- **Clan-tag stripping** — `[LG]Serral` → `Serral` for stable memory/mute/owner keys
+- **Game-request detection** — optional canned replies for `[1v1]`, `[host]`, LFG, etc.
 - **Anti-spam** — global + per-player cooldowns, rate limits, mute list
-- **Owner-only in-chat commands** (see below)
-- **Human-like behaviour** — configurable reply delay, optional typos, address-by-name
-- **Portable build** — one folder supports both Simulated and OCR modes via config
+- **Owner-only in-chat commands**
+- **Human-like behaviour** — reply delay, optional typos, casual typing rules in the system prompt
+- **Portable build** — one folder for Simulated and OCR modes
 
 ---
 
@@ -54,40 +63,137 @@ Any software that automatically reads chat from or injects keystrokes into the l
 
 ## How the bot works
 
-1. A **Chat Backend** continuously yields new messages (OCR or simulated).
-2. Names are normalized (clan tags stripped); multi-line OCR text is joined; game-request patterns are flagged.
+1. A **Chat Backend** yields new messages (OCR or simulated).
+2. Names are normalized; multi-line OCR text is joined; game-request patterns are flagged.
 3. The **Decision Engine** checks anti-spam, triggers, game-request handling, and memory.
-4. If an LLM reply is needed, a progress spinner is shown while the model generates text (with blacklist / favorites guidance).
-5. The reply is filtered through the blacklist, then sent after a short human-like delay (optional typos).
+4. If an LLM reply is needed, a spinner is shown while the model generates text (with blacklist / favorites guidance and optional `think` control).
+5. The reply is cleaned (no meta/planning dumps, no emojis), filtered through the blacklist, optionally prefixed with the player name, then sent after a short delay.
 
-### Two backends (same program / same portable build)
+### Two backends (same program)
 
 | Backend     | Reads live SC2 chat? | Sends replies?     | Recommended for         |
 |-------------|----------------------|--------------------|-------------------------|
 | `simulated` | No                   | Yes (console)      | Development & testing   |
 | `sc2_stub`  | Yes (OCR)            | Yes (keyboard)     | Live client (high risk) |
 
-Switch by editing `config/config.yaml` → `chat_backend`, then restart.
+Switch with `chat_backend` in `config/config.yaml`, then restart.
 
-**Chat position:** OCR uses one `chat_region` rectangle. Lobby chat is usually **bottom-right**. Measure with `tools/measure_chat_region.py`.
+**Chat position:** OCR uses one `chat_region` rectangle (usually bottom-right in lobby). Measure with `tools/measure_chat_region.py`.
+
+---
+
+## LLM providers
+
+### Thinking (`llm.think`)
+
+```yaml
+llm:
+  think: false   # recommended for SC2 chat
+  # think: true  # allow chain-of-thought where the API supports it
+```
+
+| Value | Effect |
+|-------|--------|
+| `false` | Disable thinking (Ollama native `think: false`; OpenAI-compatible `extra_body.think: false` when accepted). Faster; avoids empty `content` / planning dumps on Qwen3-style models. |
+| `true` | Allow thinking on models that support it. Slower; can help harder prompts. |
+
+**Changing `think` requires a full bot restart** (not only `!reload`).
+
+### Timeouts
+
+```yaml
+llm:
+  request_timeout_sec: 60    # wait for full reply (default 60 cloud / 120 local if unset)
+  connect_timeout_sec: 10    # initial connect
+```
+
+Raise `request_timeout_sec` (e.g. `120`–`180`) for slow local models.
+
+### Local Ollama
+
+1. Install [Ollama](https://ollama.com/) and pull a model:
+   ```bash
+   ollama pull qwen3.5:9b
+   ollama list
+   ```
+2. Keep Ollama running (`ollama serve` if needed).
+3. Config:
+
+```yaml
+llm:
+  provider: "ollama"
+  api_key: "ollama"
+  model: "qwen3.5:9b"          # exact name from `ollama list` (no ollama/ prefix)
+  temperature: 0.9
+  max_output_tokens: 150
+  base_url: "http://127.0.0.1:11434/v1"
+  think: false
+  request_timeout_sec: 120
+```
+
+The bot calls Ollama’s native `/api/chat` with `think` from config, then falls back to the OpenAI-compatible path if needed.
+
+**Tips for Qwen3 / thinking models:** keep `think: false`, `temperature` around `0.9`, and `max_output_tokens` around `120`–`150` so replies stay short and land in `content` instead of only in a reasoning field.
+
+### Gemini
+
+1. https://aistudio.google.com/ → create an API key  
+2. Set `llm.api_key` / `gemini.api_key` or `GEMINI_API_KEY`
+
+```yaml
+llm:
+  provider: "gemini"
+  api_key: "YOUR_KEY"
+  model: "gemini-2.0-flash"
+  think: false
+```
+
+### NVIDIA (build.nvidia.com)
+
+[build.nvidia.com/models](https://build.nvidia.com/models) — OpenAI-compatible API.
+
+| Setting | Value |
+|---------|--------|
+| Base URL | `https://integrate.api.nvidia.com/v1` |
+| Auth | Bearer = NVIDIA API key |
+
+**PowerShell dependency:**
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+pip install openai>=1.0.0
+```
+
+```yaml
+llm:
+  provider: "openai_compatible"
+  api_key: "nvapi-YOUR_KEY"
+  model: "meta/llama-3.3-70b-instruct"
+  base_url: "https://integrate.api.nvidia.com/v1"
+  temperature: 0.9
+  max_output_tokens: 120
+  think: false
+```
+
+### Other OpenAI-compatible (OpenRouter, LM Studio, …)
+
+Same pattern: `provider: openai_compatible` (or `openrouter` / `custom`), `api_key`, `model`, `base_url`.
 
 ---
 
 ## Personality modes
 
-The bot’s voice is controlled by `personality.political_mode` in config (the field name is historical — it also covers non-political modes).
-
-### All modes
+Controlled by `personality.political_mode` (name is historical — includes non-political modes).
 
 | Mode | Type | Behaviour |
 |------|------|-----------|
-| `neutral` | Neutral | Light sarcasm OK. No left/right talking points. |
-| `left` | Political | Soft left lean when it fits (inequality, labor, climate, critique of the right). Chat-length, not a lecture. |
-| `right` | Political | Soft right lean when it fits (free speech, borders, personal responsibility, critique of the left). Chat-length. |
-| `propaganda_left` | Political (hard) | Hostile left propaganda: push progressive takes, attack the right, culture-war framing. Mean and punchy. |
-| `propaganda_right` | Political (hard) | Hostile right propaganda: push conservative takes, attack the left, culture-war framing. Mean and punchy. |
-| `troll` | **Non-political** | Classic internet troll. Provoke, mock, bad-faith questions, sarcasm. **No politics, no news lectures.** |
-| `ragebait` | **Non-political** | Maximize annoyance: dismiss, twist their words, act superior, bait arguments. **No politics.** |
+| `neutral` | Neutral | Light sarcasm. No left/right talking points. |
+| `left` | Political | Soft left lean when natural. |
+| `right` | Political | Soft right lean when natural. |
+| `propaganda_left` | Political (hard) | Hostile left propaganda; culture-war framing. |
+| `propaganda_right` | Political (hard) | Hostile right propaganda; culture-war framing. |
+| `troll` | **Non-political** | Classic troll: provoke, mock, bad-faith. No politics. |
+| `ragebait` | **Non-political** | Maximize annoyance; dismiss and bait. No politics. |
 
 ### Example reactions
 
@@ -105,31 +211,23 @@ The bot’s voice is controlled by `personality.political_mode` in config (the f
 | `troll` | `because you keep typing and i keep winning the argument` |
 | `ragebait` | `you’re the one still talking` |
 
-**Rough difference:** `troll` is a clown who wants a reaction; `ragebait` is colder and frames *them* as the problem. Political modes push ideology instead of pure mockery.
+### Other knobs
 
-Actual wording varies with the LLM, aggressiveness, memory, length, favorites, and blacklist settings.
+| Setting | Values | Effect |
+|---------|--------|--------|
+| `aggressiveness` | `1`–`10` | Friendly → max toxic |
+| `response_length` | `short` / `medium` / `long` | Word-count guidance |
+| `emoji_intensity` | ignored | **Emojis always disabled** |
+| `sc2_reference_level` | `0`–`10` | Never mention game → full game talk |
+| `topics` | booleans | politics, current_events, in_game_strategy, memes, personal |
 
-### Other personality knobs
-
-| Setting | Range / values | Effect |
-|---------|----------------|--------|
-| `aggressiveness` | `1`–`10` | 1 = friendly, 5 = normal trash-talk, 10 = max toxic |
-| `response_length` | `short` / `medium` / `long` | Word-count guidance for the model |
-| `emoji_intensity` | `0`–`10` | 0 = none, 10 = emoji spam |
-| `sc2_reference_level` | `0`–`10` | 0 = never mention SC2/game; 10 = full game talk |
-| `topics` | booleans | Toggle politics, current_events, in_game_strategy, memes, personal |
-
-In `troll` / `ragebait`, politics and current-events topic flags are overridden so the bot stays non-political.
-
-### Edit in config
-
-`config/config.yaml`:
+### Config example
 
 ```yaml
 personality:
   aggressiveness: 8
-  political_mode: "troll"    # neutral|left|right|propaganda_left|propaganda_right|troll|ragebait
-  response_length: "medium"  # short|medium|long
+  political_mode: "troll"
+  response_length: "medium"
   emoji_intensity: 0
   sc2_reference_level: 0
   topics:
@@ -140,57 +238,41 @@ personality:
     personal: true
 ```
 
-Restart the bot after editing config, **or** use `!reload` in chat if you only changed values that reload supports (personality fields are reloaded).
-
-### Change live with owner commands
+### Live owner commands
 
 | Command | Example | Effect |
 |---------|---------|--------|
-| `!prop` / `!political` / `!mode` | `!prop troll` | Set mode (`troll`, `ragebait`, `neutral`, `left`, …) |
+| `!prop` / `!political` / `!mode` | `!prop troll` | Set mode |
 | `!tone` / `!aggro` | `!tone 9` | Aggressiveness 1–10 |
-| `!length` | `!length short` | `short` / `medium` / `long` |
-| `!status` | `!status` | Show current aggro, mode, mute count |
-
-Examples:
-
-```text
-!prop ragebait
-!tone 9
-!length short
-!status
-```
+| `!length` | `!length short` | short / medium / long |
+| `!status` | `!status` | Show aggro, mode, mute count |
 
 ---
 
-## Blacklist (block words & symbols)
+## Blacklist
 
-Stops the AI (and canned replies) from using specific words, symbols, letters, or substrings. Applied **after** generation so banned text cannot slip through.
+Applied **after** generation to AI and canned replies.
 
 ```yaml
 blacklist:
   case_sensitive: false
-  words: []                 # whole words/phrases removed
-  symbols:                  # removed (unless replaced first)
-    - "—"                   # em dash
-    - "–"                   # en dash
-    - "“"
-    - "”"
-  letters: []               # single characters to strip
-  substrings: []            # removed anywhere in the string
-  replacements:             # applied first
+  words: []
+  symbols:
+    - "—"
+  letters: []
+  substrings: []
+  replacements:
     "—": "-"
-    "–": "-"
 ```
 
-**Order:** `replacements` → `symbols` → `letters` → `substrings` → `words`.
-
-The model is also told not to use banned items; the filter enforces it. If a reply becomes empty after filtering, a short fallback is used. Counts appear in the startup **ACTIVE CONFIG** log. `!reload` picks up changes.
+**Order:** replacements → symbols → letters → substrings → words.  
+If a reply is empty after filtering, nothing is sent.
 
 ---
 
-## Favorites (prefer certain words)
+## Favorites
 
-Nudges the model to use your preferred words/phrases **more often** when they fit naturally. This is prompt guidance (not a hard insert), so intensity controls how strongly it is pushed.
+Prompt nudge only (not forced insert):
 
 ```yaml
 favorites:
@@ -198,37 +280,41 @@ favorites:
   words:
     - "bruh"
     - "lmao"
-    - "nah"
-    - "bet"
 ```
 
-| Intensity | Effect |
-|-----------|--------|
-| `soft` | Light preference when natural |
-| `medium` | Prefer these often when they fit (default) |
-| `strong` | Strongly prefer; try to use at least one when possible |
+---
 
-Favorites only affect **LLM** replies (not pure canned/trigger lines). They work together with the blacklist: favorite a slang word while still banning em dashes, etc.
+## Behaviour highlights
+
+```yaml
+behaviour:
+  min_reply_delay_sec: 0.35
+  max_reply_delay_sec: 0.8
+  typo_chance: 0.0
+  reply_probability: 1.0
+  address_by_name: true
+  address_by_name_chance: 0.3   # 0.0 never … 1.0 every reply
+  name_separator: ", "
+  reply_to_game_requests: false
+  game_request_use_canned: false
+```
 
 ---
 
 ## Owner commands
 
-Only names listed under `owner.names` (and `sc2_stub.self_name`) can use these. Default prefix is `!`.
+Only `owner.names` (and `sc2_stub.self_name`) can use these. Default prefix `!`.
 
 | Command | Example | Effect |
 |---------|---------|--------|
-| `!tone` / `!aggro` | `!tone 7` | Set aggressiveness 1–10 |
-| `!prop` / `!political` / `!mode` | `!prop troll` | Set personality mode (see table above) |
-| `!mute` | `!mute PlayerName` | Mute a player |
-| `!unmute` | `!unmute PlayerName` | Unmute a player |
-| `!length` | `!length short` | Set reply length (`short` / `medium` / `long`) |
-| `!status` | `!status` | Show current aggro, mode, mute count |
-| `!reload` | `!reload` | Reload config (personality, triggers, blacklist, favorites, etc.) |
+| `!tone` / `!aggro` | `!tone 7` | Aggressiveness 1–10 |
+| `!prop` / `!mode` | `!prop troll` | Personality mode |
+| `!mute` / `!unmute` | `!mute PlayerName` | Mute / unmute |
+| `!length` | `!length short` | Reply length |
+| `!status` | `!status` | Status |
+| `!reload` | `!reload` | Reload config (personality, triggers, blacklist, favorites, …). **LLM provider / think / model need a full restart.** |
 
-Clan tags are ignored for matching, so `!mute [LG]Bob` and `!mute Bob` are the same.
-
-Put your in-game name in **both** `owner.names` and `sc2_stub.self_name` so in-game commands are recognized.
+Put your in-game name in **both** `owner.names` and `sc2_stub.self_name`.
 
 ---
 
@@ -241,66 +327,16 @@ pip install -r requirements.txt
 python main.py
 ```
 
-Edit `config/config.yaml` and set your API key (`llm.api_key` / `gemini.api_key` or environment variable).
+Edit `config/config.yaml` (API key, provider, `think`, timeouts).
 
 ---
 
-## Portable folder (Simulated + OCR in one package)
+## Portable folder
 
-Users can run a self-contained folder **without installing Python**. One build includes **both** modes; switch by editing config.
+**Windows:** `scripts\build_portable.bat`  
+**Linux / macOS:** `./scripts/build_portable.sh`
 
-### Build the portable folder (developer machine)
-
-**Windows:**
-```bat
-scripts\build_portable.bat
-```
-
-**Linux / macOS:**
-```bash
-chmod +x scripts/build_portable.sh
-./scripts/build_portable.sh
-```
-
-Output:
-
-```text
-dist/SC2ChatBot/
-├── SC2ChatBot.exe          # or SC2ChatBot on Unix
-├── config/
-│   ├── config.yaml         # users edit this
-│   └── config.example.yaml
-├── tools/
-│   └── measure_chat_region.py
-├── README_PORTABLE.txt
-└── SWITCH_MODES.txt
-```
-
-Zip and share `dist/SC2ChatBot/`. Paths resolve next to the executable so config/logs work after moving the folder.
-
-### End-user: Simulated mode
-
-1. Open `config/config.yaml`
-2. Set your API key
-3. Keep `chat_backend: "simulated"`
-4. Run `SC2ChatBot.exe`
-
-### End-user: OCR mode (same folder)
-
-1. Install [Tesseract OCR](https://github.com/tesseract-ocr/tesseract)
-2. Measure chat box → set `sc2_stub.chat_region`
-3. Set:
-   ```yaml
-   chat_backend: "sc2_stub"
-   sc2_stub:
-     ocr_enabled: true
-     chat_region: [left, top, width, height]
-   ```
-4. Restart the exe with SC2 visible (windowed)
-
-See `portable/SWITCH_MODES.txt` (copied into the dist folder).
-
-**Note:** OCR still depends on system Tesseract unless you separately bundle it. Keyboard/OCR access is OS-dependent.
+Output under `dist/SC2ChatBot/`. Users edit `config/config.yaml` and run the executable. Switch Simulated ↔ OCR via `chat_backend` (OCR needs system Tesseract).
 
 ---
 
@@ -311,122 +347,37 @@ pip install mss Pillow pytesseract pyautogui PyGetWindow
 python tools/measure_chat_region.py
 ```
 
-Then in `config/config.yaml`:
-
 ```yaml
 chat_backend: "sc2_stub"
 sc2_stub:
   ocr_enabled: true
-  chat_region: [1420, 680, 480, 300]   # your values
+  chat_region: [1420, 680, 480, 300]
+  self_name: "YourInGameName"
 ```
 
-Run SC2 in Windowed / Windowed Fullscreen. Lobby chat is typically bottom-right.
-
-The OCR parser joins multi-line messages: text that continues below a `[1. General] Name:` header is treated as part of the same message and sent in full to the AI.
-
----
-
-## Player names, game requests & memory
-
-- **Clan tags** stripped for memory / mute / owner keys; display name kept when useful
-- **Game requests** (`[1v1]`, `[host]`, LFG text, …) can use short canned replies
-- **Memory:** up to 30 messages per player; optional `persist_path: "logs/memory.json"`
-
-```yaml
-behaviour:
-  reply_to_game_requests: true
-  game_request_use_canned: true
-```
-
----
-
-## API keys
-
-### Gemini
-1. Go to https://aistudio.google.com/
-2. Create an API key
-3. Put it in `config/config.yaml` (`llm.api_key` or `gemini.api_key`) or set `GEMINI_API_KEY`
-
-### NVIDIA models (build.nvidia.com)
-
-[build.nvidia.com/models](https://build.nvidia.com/models) hosts many free / freemium LLMs (Llama, Nemotron, DeepSeek, Mixtral, Gemma, etc.) behind an **OpenAI-compatible** API.
-
-**How it works with this bot**
-
-1. You pick a model on the site and get an NVIDIA API key.
-2. The bot’s `LLMClient` talks to NVIDIA’s hosted endpoint using the standard OpenAI chat-completions protocol (`base_url` + `api_key` + `model`).
-3. No special NVIDIA SDK is required beyond the optional `openai` Python package.
-
-**Endpoint used by the bot**
-
-| Setting | Value |
-|---------|--------|
-| Base URL | `https://integrate.api.nvidia.com/v1` |
-| Auth | Bearer token = your NVIDIA API key |
-| Protocol | OpenAI Chat Completions (`/v1/chat/completions`) |
-
-**Get an API key**
-
-1. Open https://build.nvidia.com/models and sign in (NVIDIA account).
-2. Click your profile → **API Keys** (or the key prompt on a model page).
-3. Generate a key and copy it (you won’t see it again).
-
-**Install the dependency (PowerShell)**
-
-The NVIDIA path uses the OpenAI-compatible client, which is optional in `requirements.txt`. Install it in your venv:
-
-```powershell
-# From the project root, with the venv activated
-.\.venv\Scripts\Activate.ps1
-pip install openai>=1.0.0
-```
-
-Or install everything needed for OpenAI-compatible providers in one go:
-
-```powershell
-pip install openai>=1.0.0
-```
-
-**Configure `config/config.yaml`**
-
-```yaml
-llm:
-  provider: "openai_compatible"   # or openai / custom / openrouter
-  api_key: "nvapi-YOUR_KEY_HERE"
-  model: "meta/llama-3.3-70b-instruct"   # any id from build.nvidia.com/models
-  base_url: "https://integrate.api.nvidia.com/v1"
-  temperature: 0.9
-  max_output_tokens: 120
-```
-
-Model IDs are the full names shown on the site (e.g. `meta/llama-3.3-70b-instruct`, `nvidia/llama-3.1-nemotron-70b-instruct`, `mistralai/mixtral-8x22b-instruct-v0.1`). Check the model card for the exact string and rate limits / free tier details.
-
-Restart the bot after changing the config. The console will log something like `LLM provider=openai_compatible model=… base_url=https://integrate.api.nvidia.com/v1`.
-
-### Other OpenAI-compatible providers
-
-Set `llm.provider` to `openai`, `openai_compatible`, `openrouter`, or `custom`, and supply `api_key`, `model`, and optionally `base_url`. Same `openai` package as above.
+Run SC2 windowed. Multi-line messages under `[1. General] Name:` are joined before the AI sees them.
 
 ---
 
 ## Configuration overview
 
-All settings live in `config/config.yaml`:
-
 | Section | Purpose |
 |---------|---------|
-| `llm` / `gemini` | Provider, model, API key, temperature, max tokens |
+| `llm` | Provider, model, key, temperature, tokens, **`think`**, **timeouts**, `base_url` |
+| `gemini` | Legacy Gemini fields (used if `llm` is omitted) |
 | `owner` | Owner names + command prefix |
-| `personality` | Aggressiveness, mode (`troll` / political / …), length, emoji, SC2 ref level, topics |
-| `blacklist` | Ban words, symbols, letters, substrings; replacements |
-| `favorites` | Preferred words/phrases + intensity (`soft` / `medium` / `strong`) |
-| `behaviour` | Reply delays, probability, typos, game-request handling, address-by-name |
+| `personality` | Mode, aggro, length, SC2 ref, topics (emojis always off) |
+| `blacklist` | Banned words/symbols/letters/substrings + replacements |
+| `favorites` | Preferred vocabulary + intensity |
+| `behaviour` | Delays, typos, reply probability, name addressing chance, game requests |
 | `anti_spam` | Cooldowns, rate limits, mute list |
-| `memory` | Per-player history size + optional persistence path |
-| `triggers` / `canned_blocks` | Regex triggers and canned replies |
+| `memory` | History size + `persist_path` |
+| `triggers` / `canned_blocks` | Regex triggers and canned lines |
 | `chat_backend` | `simulated` or `sc2_stub` |
-| `sc2_stub` | OCR region, keys, Tesseract path, tab switching |
+| `sc2_stub` | OCR region, keys, Tesseract, tabs |
 | `logging` | Level, file, console |
+
+Startup prints an **ACTIVE CONFIG** summary (including `think`).
 
 ---
 
@@ -435,23 +386,21 @@ All settings live in `config/config.yaml`:
 ```text
 sc2_chatbot/
 ├── config/                     # config.yaml + example
-├── portable/                   # texts shipped inside dist/
-├── scripts/build_portable.*    # build the portable folder
+├── portable/
+├── scripts/build_portable.*
 ├── tools/measure_chat_region.py
-├── SC2ChatBot.spec             # PyInstaller
 ├── src/
-│   ├── bot.py                  # main loop, process message, send
+│   ├── bot.py                  # main loop, config summary, LLM wiring
 │   ├── decision_engine.py      # triggers → LLM → blacklist/favorites → reply
-│   ├── llm_client.py           # Gemini + OpenAI-compatible
+│   ├── llm_client.py           # Gemini + OpenAI-compatible + Ollama native
 │   ├── chat/
-│   │   ├── sc2_stub.py         # OCR + multi-line parse + keyboard send
-│   │   └── simulated.py        # console backend
-│   ├── personality.py          # system prompt builder
-│   ├── triggers.py             # regex / canned engine
+│   │   ├── sc2_stub.py         # OCR + multi-line parse + keyboard
+│   │   └── simulated.py
+│   ├── personality.py
+│   ├── triggers.py
 │   ├── anti_spam.py
 │   ├── memory.py
-│   ├── commands.py             # owner !commands
-│   ├── names.py                # clan-tag strip, OCR name cleanup
+│   ├── commands.py
 │   └── …
 └── main.py
 ```
