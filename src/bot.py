@@ -43,7 +43,7 @@ class SC2ChatBot:
             "aggressiveness": p.aggressiveness,
             "political_mode": p.political_mode,
             "response_length": p.response_length,
-            "emoji_intensity": p.emoji_intensity,
+            "emoji_intensity": 0,  # emojis fully disabled
             "sc2_reference_level": getattr(p, "sc2_reference_level", 2),
             "topics": dict(p.topics),
         }
@@ -65,6 +65,7 @@ class SC2ChatBot:
             base_url=llm_cfg.base_url,
             request_timeout_sec=getattr(llm_cfg, "request_timeout_sec", None),
             connect_timeout_sec=getattr(llm_cfg, "connect_timeout_sec", None),
+            think=bool(getattr(llm_cfg, "think", False)),
         )
 
         self.triggers = TriggerEngine(self.config.triggers, self.config.canned_blocks)
@@ -123,14 +124,15 @@ class SC2ChatBot:
         self.personality_state["aggressiveness"] = p.aggressiveness
         self.personality_state["political_mode"] = p.political_mode
         self.personality_state["response_length"] = p.response_length
-        self.personality_state["emoji_intensity"] = p.emoji_intensity
+        self.personality_state["emoji_intensity"] = 0
         self.personality_state["sc2_reference_level"] = getattr(p, "sc2_reference_level", 2)
         self.personality_state["topics"] = dict(p.topics)
+        # Note: llm.think / provider changes require a full restart
         self.commands.reload_owners(self.config)
         if self.config.chat_backend != old_backend:
             self.logger.warning("chat_backend changed — full restart required")
         else:
-            self.logger.info("Configuration reloaded")
+            self.logger.info("Configuration reloaded (LLM think/provider changes need restart)")
 
     def _priority_for(self, msg: ChatMessage) -> int:
         text = (msg.text or "").lower()
@@ -238,13 +240,14 @@ class SC2ChatBot:
             f"  base_url:             {llm.base_url or '(default)'}",
             f"  temperature:          {llm.temperature}",
             f"  max_output_tokens:    {llm.max_output_tokens}",
+            f"  think:                {getattr(llm, 'think', False)}",
             f"  request_timeout_sec:  {getattr(llm, 'request_timeout_sec', 60)}",
             "",
             "  -- Personality --",
             f"  mode:                 {p.get('political_mode')}",
             f"  aggressiveness:       {p.get('aggressiveness')}",
             f"  response_length:      {p.get('response_length')}",
-            f"  emoji_intensity:      {p.get('emoji_intensity')}",
+            f"  emojis:               disabled",
             f"  sc2_reference_level:  {p.get('sc2_reference_level')}",
             f"  topics enabled:       {', '.join(str(t) for t in topics_on)}",
             "",
@@ -307,10 +310,11 @@ class SC2ChatBot:
         self._running = True
         llm_cfg = self.config.resolved_llm()
         self.logger.info(
-            "SC2 Chat Bot starting (backend=%s, llm=%s/%s, mode=%s, sc2_ref=%s, self=%s)",
+            "SC2 Chat Bot starting (backend=%s, llm=%s/%s, think=%s, mode=%s, sc2_ref=%s, self=%s)",
             self.config.chat_backend,
             llm_cfg.provider,
             llm_cfg.model,
+            getattr(llm_cfg, "think", False),
             self.personality_state.get("political_mode"),
             self.personality_state.get("sc2_reference_level"),
             sorted(self.self_names),
