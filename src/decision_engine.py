@@ -217,6 +217,29 @@ class DecisionEngine:
             f"(do not force them awkwardly): {sample}"
         )
 
+    def _is_echo(self, incoming_text: str, generated_text: str) -> bool:
+        """Check if generated text echoes or repeats the incoming text."""
+        inc = (incoming_text or "").strip().lower()
+        gen = (generated_text or "").strip().lower()
+
+        if not inc or not gen:
+            return False
+
+        # Direct string comparison or containment
+        if gen == inc or inc in gen:
+            return True
+
+        # Check word overlap ratio
+        inc_words = set(re.findall(r"\w+", inc))
+        gen_words = set(re.findall(r"\w+", gen))
+
+        if len(inc_words) >= 3 and len(gen_words) >= 3:
+            overlap = inc_words.intersection(gen_words)
+            if len(overlap) / float(len(inc_words)) > 0.8:
+                return True
+
+        return False
+
     def decide_and_generate(self, msg: ChatMessage) -> Optional[str]:
         if not self.should_consider(msg):
             return None
@@ -289,6 +312,25 @@ class DecisionEngine:
             spinner="dots",
         ):
             body = self.llm.generate(system, user_prompt, history)
+
+        # Echo check and rewrite loop
+        if body and self._is_echo(msg.text, body):
+            logger.warning("LLM echoed user prompt ('%s'). Requesting rewrite...", body)
+            rewrite_prompt = (
+                f"{user_prompt}\n\n"
+                f"CRITICAL INSTRUCTION: Your previous response was '{body}', which repeated the user's prompt. "
+                "Do NOT repeat, echo, or quote their words. Write a totally new, direct reaction response instead."
+            )
+            with Status(
+                "[cyan]AI rewriting response…[/cyan]",
+                console=Console(stderr=True),
+                spinner="dots",
+            ):
+                body = self.llm.generate(system, rewrite_prompt, history)
+
+            if body and self._is_echo(msg.text, body):
+                logger.warning("Rewrite still echoed user prompt — dropping response.")
+                return None
 
         # No fallback replies — if the model returns nothing, do not send chat
         if not (body or "").strip():
