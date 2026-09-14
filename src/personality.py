@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Optional
 
 POLITICAL_PROMPTS: Dict[str, str] = {
     "neutral": (
@@ -77,8 +77,46 @@ def build_system_prompt(
     channel: str = "all",
     player_name: str = "",
     sc2_reference_level: int = 3,
+    custom_enabled: bool = False,
+    custom_prompt: str = "",
 ) -> str:
-    pol = POLITICAL_PROMPTS.get(political_mode, POLITICAL_PROMPTS["neutral"])
+    custom_text = (custom_prompt or "").strip()
+    use_custom = bool(custom_enabled) and bool(custom_text)
+    mode = "custom" if use_custom else (political_mode or "neutral")
+
+    if use_custom:
+        pol = (
+            "CUSTOM PERSONALITY (overrides all prebuilt modes):\n"
+            f"{custom_text}"
+        )
+        priority = (
+            "PRIORITY: Follow the CUSTOM PERSONALITY description exactly. "
+            "Prebuilt modes (troll, propaganda, left/right, etc.) are disabled."
+        )
+        troll_mode = False
+        propaganda = False
+    else:
+        pol = POLITICAL_PROMPTS.get(mode, POLITICAL_PROMPTS["neutral"])
+        troll_mode = mode in ("troll", "ragebait")
+        propaganda = mode.startswith("propaganda")
+        if troll_mode:
+            priority = (
+                "PRIORITY: Pure troll / rage-bait. No politics. "
+                "Provoke and mock; do not educate or debate ideology."
+            )
+        elif propaganda:
+            priority = (
+                "PRIORITY: This is a political propaganda bot. "
+                "Even if they talk about the game, pivot or reframe into politics, culture war, "
+                "or real-world events. Do not default to Zerg/Protoss/MMR banter."
+            )
+        elif mode in ("left", "right"):
+            priority = (
+                "Prefer political and real-world angles over pure game mechanics when you can."
+            )
+        else:
+            priority = ""
+
     length = LENGTH_MAP.get(response_length, LENGTH_MAP["medium"])
     sc2_rules = _sc2_reference_rules(sc2_reference_level)
 
@@ -86,12 +124,20 @@ def build_system_prompt(
         f"Aggressiveness level {aggressiveness}/10. "
         "1 = friendly, 5 = normal trash-talk, 10 = extremely toxic, insults, no filter."
     )
-    # Emojis are fully disabled (emoji_intensity ignored)
     emoji = "Never use emojis or emoticons of any kind."
 
     topic_rules = []
-    troll_mode = political_mode in ("troll", "ragebait")
-    if troll_mode:
+    if use_custom:
+        # Custom mode: still respect topic toggles, but do not force troll politics ban
+        if topics.get("politics", True):
+            topic_rules.append("Politics and ideology are allowed if they fit the custom personality.")
+        else:
+            topic_rules.append("Do NOT discuss politics.")
+        if topics.get("current_events", True) or topics.get("currentevents", True):
+            topic_rules.append("Current events are allowed if they fit the custom personality.")
+        else:
+            topic_rules.append("Do NOT discuss current events or news.")
+    elif troll_mode:
         topic_rules.append("Do NOT discuss politics or ideology — pure trolling only.")
         topic_rules.append("Do NOT discuss current events or news as serious topics.")
     else:
@@ -103,6 +149,7 @@ def build_system_prompt(
             topic_rules.append("Real-world news and current political events are allowed and encouraged.")
         else:
             topic_rules.append("Do NOT discuss current events or news.")
+
     if topics.get("in_game_strategy", False) or topics.get("ingamestrategy", False):
         topic_rules.append("Game strategy talk is allowed.")
     else:
@@ -112,24 +159,6 @@ def build_system_prompt(
     if topics.get("personal", True):
         topic_rules.append("Personal attacks / personal topics are allowed within chat norms.")
 
-    propaganda = political_mode.startswith("propaganda")
-    priority = ""
-    if troll_mode:
-        priority = (
-            "PRIORITY: Pure troll / rage-bait. No politics. "
-            "Provoke and mock; do not educate or debate ideology."
-        )
-    elif propaganda:
-        priority = (
-            "PRIORITY: This is a political propaganda bot. "
-            "Even if they talk about the game, pivot or reframe into politics, culture war, "
-            "or real-world events. Do not default to Zerg/Protoss/MMR banter."
-        )
-    elif political_mode in ("left", "right"):
-        priority = (
-            "Prefer political and real-world angles over pure game mechanics when you can."
-        )
-
     name_rule = ""
     if player_name:
         name_rule = (
@@ -137,11 +166,12 @@ def build_system_prompt(
             f"Do NOT put their name in the reply body — a prefix is added separately."
         )
 
-    voice = (
-        "Sound like a real toxic chat troll (slang, abbreviations OK)."
-        if troll_mode
-        else "Sound like a real toxic/political chat user (slang, abbreviations OK)."
-    )
+    if use_custom:
+        voice = "Sound like a real human in game chat (slang, abbreviations OK). Match the custom personality."
+    elif troll_mode:
+        voice = "Sound like a real toxic chat troll (slang, abbreviations OK)."
+    else:
+        voice = "Sound like a real toxic/political chat user (slang, abbreviations OK)."
 
     return f"""You are a regular player sitting in a multiplayer game chat lobby.
 Never break character, apologize, or sound like a helpful assistant/AI.
