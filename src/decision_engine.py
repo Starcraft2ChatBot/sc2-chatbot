@@ -29,7 +29,6 @@ GAME_REQUEST_REPLIES = {
 
 
 def apply_blacklist(text: str, cfg: Optional[Dict[str, Any]]) -> str:
-    """Remove or replace blacklisted words, symbols, letters, and substrings."""
     if not text or not cfg:
         return text or ""
 
@@ -172,11 +171,9 @@ class DecisionEngine:
     def _address_player(self, msg: ChatMessage, body: str) -> str:
         if not self.behaviour.get("address_by_name", True):
             return body
-
         chance = self._address_name_chance()
         if chance <= 0.0 or random.random() > chance:
             return body
-
         name = short_display_name(msg.display_name or msg.player)
         body = (body or "").strip()
         if not name:
@@ -189,7 +186,6 @@ class DecisionEngine:
         return f"{name}{sep}{body}"
 
     def _finalize_reply(self, msg: ChatMessage, body: str) -> Optional[str]:
-        """Blacklist + optional name prefix. Returns None if nothing left to send."""
         body = apply_blacklist(body or "", self.blacklist)
         if not (body or "").strip():
             return None
@@ -218,26 +214,18 @@ class DecisionEngine:
         )
 
     def _is_echo(self, incoming_text: str, generated_text: str) -> bool:
-        """Check if generated text echoes or repeats the incoming text."""
         inc = (incoming_text or "").strip().lower()
         gen = (generated_text or "").strip().lower()
-
         if not inc or not gen:
             return False
-
-        # Direct string comparison or containment
         if gen == inc or inc in gen:
             return True
-
-        # Check word overlap ratio
         inc_words = set(re.findall(r"\w+", inc))
         gen_words = set(re.findall(r"\w+", gen))
-
         if len(inc_words) >= 3 and len(gen_words) >= 3:
             overlap = inc_words.intersection(gen_words)
             if len(overlap) / float(len(inc_words)) > 0.8:
                 return True
-
         return False
 
     def decide_and_generate(self, msg: ChatMessage) -> Optional[str]:
@@ -267,13 +255,15 @@ class DecisionEngine:
 
         system = build_system_prompt(
             aggressiveness=self.state["aggressiveness"],
-            political_mode=self.state["political_mode"],
+            political_mode=self.state.get("political_mode", "neutral"),
             response_length=self.state["response_length"],
-            emoji_intensity=self.state["emoji_intensity"],
+            emoji_intensity=self.state.get("emoji_intensity", 0),
             topics=self.state.get("topics", {}),
             channel=msg.channel.value,
             player_name=label,
             sc2_reference_level=int(self.state.get("sc2_reference_level", 2)),
+            custom_enabled=bool(self.state.get("custom_enabled", False)),
+            custom_prompt=str(self.state.get("custom_prompt") or ""),
         )
 
         extra = ""
@@ -313,7 +303,6 @@ class DecisionEngine:
         ):
             body = self.llm.generate(system, user_prompt, history)
 
-        # Echo check and rewrite loop
         if body and self._is_echo(msg.text, body):
             logger.warning("LLM echoed user prompt ('%s'). Requesting rewrite...", body)
             rewrite_prompt = (
@@ -332,7 +321,6 @@ class DecisionEngine:
                 logger.warning("Rewrite still echoed user prompt — dropping response.")
                 return None
 
-        # No fallback replies — if the model returns nothing, do not send chat
         if not (body or "").strip():
             logger.info("LLM returned empty — not sending a reply")
             return None
