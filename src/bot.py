@@ -38,15 +38,8 @@ class SC2ChatBot:
         except Exception:
             self.logger.exception("Diagnostics failed (continuing startup)")
 
-        p = self.config.personality
-        self.personality_state = {
-            "aggressiveness": p.aggressiveness,
-            "political_mode": p.political_mode,
-            "response_length": p.response_length,
-            "emoji_intensity": 0,  # emojis fully disabled
-            "sc2_reference_level": getattr(p, "sc2_reference_level", 2),
-            "topics": dict(p.topics),
-        }
+        self.personality_state: dict = {}
+        self._apply_personality_from_config()
 
         owner_names = list(self.config.owner.get("names") or [])
         stub_self = (self.config.sc2_stub or {}).get("self_name")
@@ -103,6 +96,40 @@ class SC2ChatBot:
         self.backend: ChatBackend = self._create_backend()
         self._running = False
 
+    def _apply_personality_from_config(self) -> None:
+        """Load personality into runtime state. Custom overrides prebuilt modes."""
+        p = self.config.personality
+        custom_enabled = bool(getattr(p, "custom_enabled", False))
+        custom_prompt = str(getattr(p, "custom_prompt", "") or "").strip()
+        use_custom = custom_enabled and bool(custom_prompt)
+
+        if custom_enabled and not custom_prompt:
+            self.logger.warning(
+                "custom_enabled is true but custom_prompt is empty — falling back to political_mode=%s",
+                p.political_mode,
+            )
+            use_custom = False
+
+        if use_custom:
+            effective_mode = "custom"
+        else:
+            effective_mode = p.political_mode or "neutral"
+
+        self.personality_state.update(
+            {
+                "aggressiveness": p.aggressiveness,
+                "political_mode": effective_mode,
+                "response_length": p.response_length,
+                "emoji_intensity": 0,
+                "sc2_reference_level": getattr(p, "sc2_reference_level", 2),
+                "topics": dict(p.topics),
+                "custom_enabled": use_custom,
+                "custom_prompt": custom_prompt if use_custom else "",
+                # Keep the configured prebuilt mode so turning custom off restores it
+                "prebuilt_mode": p.political_mode or "neutral",
+            }
+        )
+
     def _create_backend(self) -> ChatBackend:
         if self.config.chat_backend == "sc2_stub":
             return SC2StubBackend(
@@ -120,19 +147,16 @@ class SC2ChatBot:
         self.engine.behaviour = self.config.behaviour
         self.engine.blacklist = dict(self.config.blacklist or {})
         self.engine.favorites = dict(self.config.favorites or {})
-        p = self.config.personality
-        self.personality_state["aggressiveness"] = p.aggressiveness
-        self.personality_state["political_mode"] = p.political_mode
-        self.personality_state["response_length"] = p.response_length
-        self.personality_state["emoji_intensity"] = 0
-        self.personality_state["sc2_reference_level"] = getattr(p, "sc2_reference_level", 2)
-        self.personality_state["topics"] = dict(p.topics)
-        # Note: llm.think / provider changes require a full restart
+        self._apply_personality_from_config()
         self.commands.reload_owners(self.config)
         if self.config.chat_backend != old_backend:
             self.logger.warning("chat_backend changed — full restart required")
         else:
-            self.logger.info("Configuration reloaded (LLM think/provider changes need restart)")
+            self.logger.info(
+                "Configuration reloaded (mode=%s custom=%s; LLM provider/think need restart)",
+                self.personality_state.get("political_mode"),
+                self.personality_state.get("custom_enabled"),
+            )
 
     def _priority_for(self, msg: ChatMessage) -> int:
         text = (msg.text or "").lower()
@@ -226,6 +250,11 @@ class SC2ChatBot:
         if not fav_words and isinstance(fav, list):
             fav_words = fav
 
+        custom_on = bool(p.get("custom_enabled"))
+        custom_preview = (p.get("custom_prompt") or "").replace("\n", " ").strip()
+        if len(custom_preview) > 80:
+            custom_preview = custom_preview[:77] + "…"
+
         lines = [
             "=" * 60,
             "  ACTIVE CONFIG",
@@ -245,6 +274,9 @@ class SC2ChatBot:
             "",
             "  -- Personality --",
             f"  mode:                 {p.get('political_mode')}",
+            f"  custom_enabled:       {custom_on}",
+            f"  custom_prompt:        {custom_preview or '(none)'}",
+            f"  prebuilt_mode:        {p.get('prebuilt_mode')}",
             f"  aggressiveness:       {p.get('aggressiveness')}",
             f"  response_length:      {p.get('response_length')}",
             f"  emojis:               disabled",
@@ -310,12 +342,13 @@ class SC2ChatBot:
         self._running = True
         llm_cfg = self.config.resolved_llm()
         self.logger.info(
-            "SC2 Chat Bot starting (backend=%s, llm=%s/%s, think=%s, mode=%s, sc2_ref=%s, self=%s)",
+            "SC2 Chat Bot starting (backend=%s, llm=%s/%s, think=%s, mode=%s, custom=%s, sc2_ref=%s, self=%s)",
             self.config.chat_backend,
             llm_cfg.provider,
             llm_cfg.model,
             getattr(llm_cfg, "think", False),
             self.personality_state.get("political_mode"),
+            self.personality_state.get("custom_enabled"),
             self.personality_state.get("sc2_reference_level"),
             sorted(self.self_names),
         )
