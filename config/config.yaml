@@ -1,4 +1,22 @@
 # ====================== AI / LLM ======================
+# Cloud (Gemini):
+#   provider: gemini
+#   api_key: YOUR_KEY
+#   model: gemini-2.0-flash
+#
+# Local Ollama:
+#   provider: ollama
+#   api_key: ollama
+#   model: qwen3.5:9b          # exact name from `ollama list`
+#   base_url: http://127.0.0.1:11434/v1
+#   think: false
+#   request_timeout_sec: 120
+#
+# NVIDIA / OpenRouter / other OpenAI-compatible:
+#   provider: openai_compatible
+#   api_key: YOUR_KEY
+#   model: meta/llama-3.3-70b-instruct
+#   base_url: https://integrate.api.nvidia.com/v1
 llm:
   provider: "gemini"
   api_key: "YOUR_API_KEY"
@@ -6,8 +24,15 @@ llm:
   temperature: 0.9
   max_output_tokens: 120
   base_url: null
-  # false = no thinking (recommended); true = allow chain-of-thought where supported
+  # Thinking / chain-of-thought (all models that support it):
+  #   false = disable (recommended for fast SC2 chat, especially Qwen3 on Ollama)
+  #   true  = allow thinking (slower; may help complex answers)
   think: false
+  # Seconds to wait for a full LLM reply (raise for slow local models)
+  request_timeout_sec: 60
+  connect_timeout_sec: 10
+  health_timeout_sec: 10
+  fail_cooldown_sec: 45
 
 gemini:
   api_key: ""
@@ -21,12 +46,14 @@ owner:
     - "YourInGameName"
   command_prefix: "!"
 
+# ====================== PERSONALITY ======================
 personality:
-  aggressiveness: 8
+  aggressiveness: 8                       # 1–10
+  # Modes: neutral|left|right|propaganda_left|propaganda_right|troll|ragebait
   political_mode: "propaganda_left"
-  response_length: "medium"
-  emoji_intensity: 0
-  sc2_reference_level: 0
+  response_length: "medium"               # short|medium|long
+  emoji_intensity: 0                      # emojis are always disabled in code
+  sc2_reference_level: 0                  # 0 = never mention SC2; 10 = full game talk
   topics:
     politics: true
     current_events: true
@@ -34,19 +61,23 @@ personality:
     memes: false
     personal: true
 
+# ====================== REPLY BLACKLIST ======================
+# Applied to every outbound AI/canned reply (after generation).
+# Order: replacements → symbols → letters → substrings → words.
 blacklist:
   case_sensitive: false
-  words: []
+  words: []                 # e.g. - "as an AI"
   symbols:
-    - "—"
+    - "—"                   # em dash
   letters: []
   substrings: []
   replacements:
     "—": "-"
 
+# ====================== FAVORITE WORDS ======================
 favorites:
-  intensity: medium
-  words: []
+  intensity: medium         # soft | medium | strong
+  words: []                 # e.g. - "bruh"
 
 behaviour:
   min_reply_delay_sec: 0.35
@@ -58,6 +89,7 @@ behaviour:
   reply_to_game_requests: false
   game_request_use_canned: false
   address_by_name: true
+  # How often to prefix the player name: 0.0 = never, 1.0 = always, 0.3 ≈ 30%
   address_by_name_chance: 0.3
   name_separator: ", "
 
