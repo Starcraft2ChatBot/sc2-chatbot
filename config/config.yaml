@@ -6,6 +6,8 @@ llm:
   temperature: 0.9
   max_output_tokens: 120
   base_url: null
+  # false = no thinking (recommended); true = allow chain-of-thought where supported
+  think: false
 
 gemini:
   api_key: ""
@@ -24,7 +26,7 @@ personality:
   political_mode: "propaganda_left"
   response_length: "medium"
   emoji_intensity: 0
-  sc2_reference_level: 0                  # 0 = no SC2 references; 10 = full game talk
+  sc2_reference_level: 0
   topics:
     politics: true
     current_events: true
@@ -32,24 +34,16 @@ personality:
     memes: false
     personal: true
 
-# ====================== REPLY BLACKLIST ======================
-# Applied to every outbound AI/canned reply (after generation).
-# Order: replacements → symbols → letters → substrings → words.
-# Add more by appending list items, e.g. words: ["as an AI"] or symbols: ["…"]
 blacklist:
   case_sensitive: false
-  words: []                 # whole words/phrases to remove, e.g. - "forbidden"
+  words: []
   symbols:
-    - "—"                   # em dash (add more symbols on new lines with - "…")
-  letters: []               # single characters to strip, e.g. - "x"
-  substrings: []            # remove anywhere in the string, e.g. - "http"
-  replacements:             # map banned text → replacement (runs first)
-    "—": "-"                # em dash → normal hyphen
+    - "—"
+  letters: []
+  substrings: []
+  replacements:
+    "—": "-"
 
-# ====================== FAVORITE WORDS ======================
-# Nudges the model to use these words/phrases more when natural.
-# intensity: soft | medium | strong
-# Add favorites under words, e.g. - "bruh"
 favorites:
   intensity: medium
   words: []
@@ -63,9 +57,7 @@ behaviour:
   ignore_system: true
   reply_to_game_requests: false
   game_request_use_canned: false
-  # Prefix the player's name on replies (e.g. "Bob, ...")
   address_by_name: true
-  # How often to include the name: 0.0 = never, 1.0 = every reply, 0.3 ≈ 30%
   address_by_name_chance: 0.3
   name_separator: ", "
 
