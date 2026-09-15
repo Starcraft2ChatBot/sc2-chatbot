@@ -59,6 +59,7 @@ class Config(BaseModel):
     memory: Dict[str, Any] = Field(default_factory=dict)
     blacklist: Dict[str, Any] = Field(default_factory=dict)
     favorites: Dict[str, Any] = Field(default_factory=dict)
+    research: Dict[str, Any] = Field(default_factory=dict)
     triggers: list = Field(default_factory=list)
     canned_blocks: list = Field(default_factory=list)
     logging: Dict[str, Any] = Field(default_factory=dict)

@@ -91,6 +91,7 @@ class SC2ChatBot:
             self_names=self.self_names,
             blacklist=dict(self.config.blacklist or {}),
             favorites=dict(self.config.favorites or {}),
+            research=dict(getattr(self.config, "research", None) or {}),
         )
 
         self.backend: ChatBackend = self._create_backend()
@@ -147,6 +148,7 @@ class SC2ChatBot:
         self.engine.behaviour = self.config.behaviour
         self.engine.blacklist = dict(self.config.blacklist or {})
         self.engine.favorites = dict(self.config.favorites or {})
+        self.engine.research = dict(getattr(self.config, "research", None) or {})
         self._apply_personality_from_config()
         self.commands.reload_owners(self.config)
         if self.config.chat_backend != old_backend:
@@ -310,6 +312,7 @@ class SC2ChatBot:
             "",
             "  -- Memory / owner --",
             f"  max_msgs_per_player:  {mem.get('max_messages_per_player', 30)}",
+            f"  research_enabled:      {bool((getattr(self.config, 'research', None) or {}).get('enabled'))}",
             f"  persist_path:         {mem.get('persist_path') or '(none)'}",
             f"  owner_names:          {list(owner.get('names') or [])}",
             f"  command_prefix:       {owner.get('command_prefix', '!')}",
