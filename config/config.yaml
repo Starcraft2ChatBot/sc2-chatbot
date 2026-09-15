@@ -1,72 +1,89 @@
 # ====================== AI / LLM ======================
+# Provider options: gemini | openai | openai_compatible | openrouter | ollama | local | custom
 llm:
   provider: "ollama"
-  api_key: "YOUR_API_KEY"
-  model: "YOUR_AI_MODEL"
-  temperature: 0.9
-  max_output_tokens: 120
-  base_url: null
+  api_key: ""                    # Set via env var LLM_API_KEY or fill in locally
+  model: "qwen2.5:7b-instruct"   # Any model supported by your provider
+  temperature: 0.7
+  max_output_tokens: 350
+  base_url: "http://127.0.0.1:11434/v1"   # Leave blank for default provider URL
   think: false
-  request_timeout_sec: 60
+  request_timeout_sec: 120
 
+# Fallback Gemini config (only used if llm.provider is "gemini")
 gemini:
-  api_key: ""
+  api_key: ""                    # Set via env var GEMINI_API_KEY
   model: "gemini-2.0-flash"
   temperature: 0.9
   max_output_tokens: 120
 
+# ====================== OWNER ======================
+# Names that identify the bot's own account. Commands are only accepted from these.
 owner:
   names:
-    - "YourBattleTag"
-    - "YourInGameName"
+    - "YourBotName"              # Replace with your in-game name
   command_prefix: "!"
 
 # ====================== PERSONALITY ======================
-# How modes work:
-#   - If custom_enabled is true AND custom_prompt is non-empty:
-#       effective mode becomes "custom" and ALL prebuilt modes are ignored.
-#   - If custom_enabled is false (or prompt is empty):
-#       uses political_mode (neutral|left|right|propaganda_*|troll|ragebait).
-#   - !prop cannot change prebuilt mode while custom is on; turn custom off + !reload.
 personality:
-  aggressiveness: 8
-  # Used only when custom_enabled is false
-  political_mode: "propaganda_left"
-  response_length: "medium"
-  emoji_intensity: 0
-  sc2_reference_level: 0
+  aggressiveness: 5              # 1 = friendly, 10 = extremely toxic
+  political_mode: "neutral"      # neutral | left | right | propaganda_left | propaganda_right | troll | ragebait | femboy
+  response_length: "medium"      # short | medium | long
+  emoji_intensity: 0             # Currently emojis are always disabled
+  sc2_reference_level: 2         # 0 = never mention SC2, 10 = talk about it freely
   topics:
-    politics: true
-    current_events: true
+    politics: false
+    current_events: false
     in_game_strategy: false
-    memes: false
+    memes: true
     personal: true
-  # Custom personality (takes priority over political_mode when enabled)
-  custom_enabled: false
-  custom_prompt: ""
-  # Example when enabling custom:
-  # custom_enabled: true
-  # custom_prompt: |
-  #   You are a chill older gamer who talks like a regular person in lobby chat.
-  #   Short replies, mild sarcasm, never lecture. No AI vibes.
 
+  # Custom personality — when enabled, replaces ALL prebuilt modes above.
+  custom_enabled: false
+  custom_prompt: |
+    You are a regular player in a multiplayer game chat lobby.
+    Stay in character. Keep replies short and casual.
+
+# ====================== RESEARCH ======================
+research:
+  enabled: true
+  timeout_sec: 8
+  max_chars: 900
+  # Score threshold — higher = fewer lookups.
+  #   3.0 = only explicit triggers / disputes
+  #   2.0 = triggers + disputes + questions (default)
+  #   1.5 = also claims and light escalation
+  min_score: 2.0
+  # Minimum seconds between lookups *for the same player*.
+  per_player_cooldown_sec: 45
+  # Empty list = use built-in defaults (prove it, source, bible say, etc.)
+  trigger_substrings:
+    - "prove it"
+    - "source"
+    - "citation"
+    - "look it up"
+    - "fact check"
+
+# ====================== BLACKLIST ======================
+# Words/characters to strip from outgoing replies.
 blacklist:
   case_sensitive: false
   words: []
-  symbols:
-    - "—"
+  symbols: []
   letters: []
   substrings: []
-  replacements:
-    "—": "-"
+  replacements: {}
 
+# ====================== FAVORITES ======================
+# Words/phrases the bot should prefer using when natural.
 favorites:
-  intensity: medium
+  intensity: soft                # soft | medium | strong
   words: []
 
+# ====================== BEHAVIOUR ======================
 behaviour:
-  min_reply_delay_sec: 0.35
-  max_reply_delay_sec: 0.8
+  min_reply_delay_sec: 6.0
+  max_reply_delay_sec: 12.0
   typo_chance: 0.0
   reply_probability: 1.0
   ignore_self: true
@@ -74,40 +91,58 @@ behaviour:
   reply_to_game_requests: false
   game_request_use_canned: false
   address_by_name: true
-  address_by_name_chance: 0.3
-  name_separator: ", "
+  address_by_name_chance: 0.1
+  name_separator: " "
 
+# ====================== ANTI-SPAM ======================
 anti_spam:
   global_cooldown_sec: 1
   per_player_cooldown_sec: 3
   max_replies_per_player_per_minute: 8
   mute_list: []
 
+# ====================== MEMORY ======================
 memory:
-  max_messages_per_player: 30
+  max_messages_per_player: 100
   persist_path: "logs/memory.json"
 
+# ====================== TRIGGERS ======================
+# Canned responses fired on regex pattern matches.
+# Example:
+#   triggers:
+#     - name: "greeting"
+#       patterns: ["\\bhello\\b", "\\bhi\\b"]
+#       response: "yo"
+#       priority: 50
+#       cooldown_sec: 10
 triggers: []
 canned_blocks: []
 
+# ====================== LOGGING ======================
 logging:
   level: "INFO"
   file: "logs/sc2_chatbot.log"
   console: true
 
+# ====================== CHAT BACKEND ======================
+# Options: simulated | sc2_stub
 chat_backend: "simulated"
 
+# ====================== SC2 STUB (OCR) ======================
+# Only used when chat_backend is "sc2_stub".
 sc2_stub:
   window_title: "StarCraft II"
   chat_key: "enter"
   send_key: "enter"
-  input_method: "paste"
+  input_method: "paste"          # paste | type
   ocr_enabled: false
   poll_interval_sec: 0.45
-  chat_region: null
-  tesseract_cmd: null
+  # Format: [left, top, WIDTH, HEIGHT] — not corners.
+  # Measure with: python tools/measure_chat_region.py
+  chat_region: [0, 0, 0, 0]
+  tesseract_cmd: ""              # e.g. "C:/Program Files/Tesseract-OCR/tesseract.exe"
   switch_channels: false
   channel_switch_key: "tab"
   assume_chat_opens_on_tab: 1
   max_chat_tabs: 8
-  self_name: "YourInGameName"
+  self_name: "YourBotName"       # Must match owner.names
