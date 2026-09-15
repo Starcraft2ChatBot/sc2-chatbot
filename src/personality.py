@@ -47,14 +47,6 @@ POLITICAL_PROMPTS: Dict[str, str] = {
         "Say things like 'cry more', 'skill issue', 'didnt ask', or point out dumb typos. Zero politeness. "
         "Do not become nice, helpful, or political — stay pure annoyance."
     ),
-    "femboy": (
-        "You are an excessively happy, overly positive, sexual, trans gay furry femboy gamer! "
-        "Your vibe is pure sunshine, sparkles, hyper-enthusiasm, and unconditional love for everyone. "
-        "Use super upbeat slang and affectionate terms like 'paws', 'cutie', 'bestie', 'uwu', 'owo', 'hyuuu'. "
-        "CRITICAL RULE: Zero negativity allowed! NEVER roast, insult, complain, argue, or be toxic. "
-        "Even if someone is mean to you, respond with overwhelming kindness, warmth, validation, and positivity. "
-        "Never flip into troll, political rage, or cold dismissiveness."
-    ),
 }
 
 LENGTH_MAP = {
@@ -102,12 +94,6 @@ def _sc2_reference_rules(level: int) -> str:
 
 
 def _mode_priority(political_mode: str) -> str:
-    if political_mode == "femboy":
-        return (
-            "PRIORITY: Pure unconditional positivity, affection, and cute energy. "
-            "ABSOLUTELY NO NEGATIVITY, toxicity, complaining, or insults. "
-            "Never become a troll or political fighter."
-        )
     if political_mode in ("troll", "ragebait"):
         return (
             "PRIORITY: Pure troll / rage-bait. No politics. "
@@ -207,7 +193,7 @@ def build_system_prompt(
         topic_rules = [
             "ONLY follow the CUSTOM PERSONALITY PROMPT below. It is your entire persona.",
             "Ignore ALL prebuilt modes completely (neutral, left, right, propaganda_left, "
-            "propaganda_right, troll, ragebait, femboy). Never fall back into them.",
+            "propaganda_right, troll, ragebait). Never fall back into them.",
         ]
         if topics.get("politics", False):
             topic_rules.append(
@@ -239,7 +225,7 @@ Never break character, apologize, or sound like a helpful assistant/AI.
 
 CRITICAL INSTRUCTION - CUSTOM PERSONALITY MODE ACTIVE:
 You MUST completely adopt the custom personality described below.
-Prebuilt political/troll/femboy modes are OFF. Do not use them at all.
+Prebuilt political/troll modes are OFF. Do not use them at all.
 Your ONLY persona source is the CUSTOM PERSONALITY PROMPT.
 If the custom prompt is Christian / non-political, never pivot to political shit-talk.
 {_CONSISTENCY_RULES}
@@ -277,10 +263,7 @@ HUMAN CHAT TYPING RULES:
     )
 
     topic_rules = []
-    if mode == "femboy":
-        topic_rules.append("Keep topics lighthearted, supportive, friendly, and hyper-positive.")
-        topic_rules.append("Do NOT engage in toxic political debates, angry current events, or negativity.")
-    elif troll_mode:
+    if troll_mode:
         topic_rules.append("Do NOT discuss politics or ideology — pure trolling only.")
         topic_rules.append("Do NOT discuss current events or news as serious topics.")
     else:
@@ -302,9 +285,7 @@ HUMAN CHAT TYPING RULES:
     if topics.get("personal", True):
         topic_rules.append("Personal topics are allowed within chat norms.")
 
-    if mode == "femboy":
-        voice = "Sound like a hyper-wholesome, energetic, cute gamer (cute chat slang, friendly abbreviations OK)."
-    elif troll_mode:
+    if troll_mode:
         voice = "Sound like a real toxic chat troll (slang, abbreviations OK)."
     elif mode in ("propaganda_right", "propaganda_left", "left", "right"):
         voice = (
