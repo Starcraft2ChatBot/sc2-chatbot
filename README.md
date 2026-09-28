@@ -450,8 +450,6 @@ If you use an **OpenAI-compatible** provider and get a missing-package error, op
 
 Then close and reopen `run_ocr.bat`.
 
-> **Blizzard ToS warning:** Live OCR + keyboard automation can violate Blizzard’s Terms of Service. Use at your own risk. For safe testing, set `chat_backend: "simulated"` instead.
-
 ---
 
 ## Running with live SC2 (OCR)
