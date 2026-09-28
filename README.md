@@ -304,84 +304,31 @@ When custom is on, `!prop` cannot switch prebuilt modes. Set `custom_enabled: fa
 | Mode | Type | Behaviour |
 |------|------|-----------|
 | `neutral` | Neutral | Light sarcasm |
-| `left` / `right` | Political | Soft lean |
-| `propaganda_left` / `propaganda_right` | Political (hard) | Hostile propaganda with hard stance lock |
-| `troll` | Non-political | Provoke and mock |
-| `ragebait` | Non-political | Dismiss and bait |
+| `left` / `right` | Political | Mild partisan lean |
+| `propaganda_left` / `propaganda_right` | Political | Heavy partisan lean |
+| `troll` | Troll | Chaotic, provocative |
+| `ragebait` | Troll | Aggressive provocation |
 
-### Example custom personality
+### Custom personality
 
-```yaml
-personality:
-  aggressiveness: 8
-  political_mode: "troll"      # only used when custom is off
-  response_length: "medium"
-  sc2_reference_level: 0
-  topics:
-    politics: true
-    current_events: true
-    in_game_strategy: false
-    memes: false
-    personal: true
+Set `custom_enabled: true` and fill `custom_prompt` with free-form instructions. The prebuilt modes are ignored entirely.
 
-  custom_enabled: true
-  custom_prompt: |
-    You are a chill older gamer in lobby chat.
-    Short replies, mild sarcasm, never lecture. No AI vibes.
-```
+### Other personality knobs
 
-The startup log shows `custom_enabled`, a preview of `custom_prompt`, and `mode: custom` when active. `!status` shows `Custom=on|off`.
-
-### Other knobs
-
-| Setting | Effect |
-|---------|--------|
-| `aggressiveness` | 1 = friendly, 10 = extremely toxic |
-| `response_length` | `short` / `medium` / `long` |
-| `emoji_intensity` | Ignored — emojis are always stripped |
-| `sc2_reference_level` | 0 = never mention SC2 … 10 = full ladder banter |
-| `topics.politics` | Allow political content in political modes |
-| `topics.current_events` | Allow news and current events |
-| `topics.in_game_strategy` | Allow builds, races, ladder talk |
-| `topics.memes` | Allow memes |
-| `topics.personal` | Allow personal small-talk |
+- `aggressiveness` (1–10)
+- `response_length`: `short` / `medium` / `long`
+- `sc2_reference_level` (0–10) — 0 forbids game talk
+- Topic toggles under `personality.topics`
 
 ---
 
 ## Blacklist, favorites, and output guards
 
-### Blacklist
+**Blacklist** applies after generation: words, substrings, symbols, letters, and replacement rules.
 
-Applied to every outgoing line **after** the guards pass. Configured under `blacklist:` in `config.yaml`.
+**Favorites** nudge preferred vocabulary at soft/medium/strong intensity.
 
-| Key | Type | Effect |
-|-----|------|--------|
-| `words` | list | Whole-word removal (word boundaries enforced) |
-| `substrings` | list | Literal substring removal |
-| `symbols` | list | Symbol removal (e.g. `—`) |
-| `letters` | list | First character of each entry removed globally |
-| `replacements` | dict | Ordered key → value replacements, longest key first |
-| `case_sensitive` | bool | Whether matching respects case |
-
-### Favorites
-
-Nudges the model toward preferred vocabulary.
-
-| Intensity | Instruction injected into the prompt |
-|-----------|--------------------------------------|
-| `soft` / `low` / `light` | "When natural, lightly prefer vocabulary like: …" |
-| `medium` (default) | "Prefer using these … often when they fit the reply (do not force them awkwardly)" |
-| `strong` / `high` / `force` | "Strongly prefer … (use at least one when possible)" |
-
-### Output guards
-
-Three independent checks run on every candidate reply:
-
-1. **`_is_echo(msg.text, reply)`** — rejects a reply that copies the player's message in whole or in large partial chunks (character spans, word-overlap ratios, n-grams, and bigram hits).
-2. **`_is_self_repeat(reply, player)`** — rejects a reply that's too similar to the bot's own recent lines, per-player and globally (Jaccard ≥ 0.78, or ≥ 4 shared tokens at ≥ 0.85 coverage).
-3. **`_is_research_echo(reply, brief)`** — rejects a reply that pastes sentences from the research brief.
-
-If any guard fails, the bot issues one rewrite request that names the failure reason. If the rewrite also fails, the reply is dropped.
+**Echo / self-repeat / research-echo** guards reject and optionally rewrite replies that copy the player, the bot's own recent lines, or the research brief.
 
 ---
 
@@ -467,25 +414,43 @@ sc2_stub:
 
 ## Quick start
 
-```bash
-python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-python main.py
+1. Download the **latest release** from the [Releases](https://github.com/Starcraft2ChatBot/sc2-chatbot/releases) page and unzip it.
+2. Install **Tesseract OCR** and make sure it is on your PATH (or set `sc2_stub.tesseract_cmd` in the config).
+3. Edit `config/config.yaml` and set at least:
+
+   ```yaml
+   llm:
+     provider: "gemini"          # or openai / openai_compatible / ollama / …
+     api_key: "YOUR_API_KEY"     # or use env var LLM_API_KEY / GEMINI_API_KEY
+     model: "gemini-2.0-flash"   # match your provider
+
+   owner:
+     names:
+       - "YourBattleTag"
+       - "YourInGameName"
+
+   chat_backend: "sc2_stub"
+
+   sc2_stub:
+     ocr_enabled: true
+     self_name: "YourInGameName"     # must match a name under owner.names
+     chat_region: null               # set this in the next step
+     # tesseract_cmd: "C:\\Program Files\\Tesseract-OCR\\tesseract.exe"  # only if not on PATH
+   ```
+
+4. Run `tools/measure_chat_region.py`, then paste the `[left, top, WIDTH, HEIGHT]` rectangle into `sc2_stub.chat_region`.
+5. Launch StarCraft II in **Windowed** (or Windowed Fullscreen) mode with the chat box visible.
+6. Double-click `run_ocr.bat` to start the bot.
+
+If you use an **OpenAI-compatible** provider and get a missing-package error, open a terminal in the bot folder and run:
+
+```bat
+.\.venv\Scripts\python.exe -m pip install openai
 ```
 
-Then edit `config/config.yaml`. If the file doesn't exist, it's created automatically from `config/config.example.yaml`.
+Then close and reopen `run_ocr.bat`.
 
-### Environment variables
-
-The loader reads these before falling back to the config file:
-
-| Variable | Purpose |
-|----------|---------|
-| `LLM_API_KEY` | Preferred key for `llm.api_key` |
-| `GEMINI_API_KEY` | Fallback key for Gemini |
-
-Copy `.env.example` to `.env` and fill in your keys, or export them in your shell.
+> **Blizzard ToS warning:** Live OCR + keyboard automation can violate Blizzard’s Terms of Service. Use at your own risk. For safe testing, set `chat_backend: "simulated"` instead.
 
 ---
 
@@ -508,18 +473,13 @@ Only names listed under `owner.names` (plus `sc2_stub.self_name`) can issue comm
 
 | Command | Effect |
 |---------|--------|
-| `!prop troll` | Set prebuilt mode (blocked while custom is on) |
-| `!prop left` / `!prop right` / `!prop neutral` | Soft political lean |
-| `!prop propaganda_left` / `!prop propaganda_right` | Hard propaganda lock |
-| `!prop ragebait` | Rage-bait mode |
-| `!tone 9` | Aggressiveness 1–10 |
-| `!length short` | Response length: `short` / `medium` / `long` |
-| `!mute PlayerName` | Add a player to the mute list |
-| `!unmute PlayerName` | Remove a player from the mute list |
-| `!reload` | Reload `config.yaml` at runtime |
-| `!status` | Show aggro, mode, custom on/off, mute count |
-
-The OCR backend also accepts mangled prefixes like `|status` or `1tone 5` because Tesseract often misreads `!`.
+| `!status` | Dump current config summary |
+| `!reload` | Reload config from disk |
+| `!mute <name>` / `!unmute <name>` | Mute / unmute a player |
+| `!mode <mode>` / `!prop <mode>` | Switch prebuilt personality mode |
+| `!aggro <1-10>` | Set aggressiveness |
+| `!len short\|medium\|long` | Set response length |
+| `!help` | List available commands |
 
 ---
 
@@ -527,36 +487,38 @@ The OCR backend also accepts mangled prefixes like `|status` or `1tone 5` becaus
 
 ```
 .
-├── main.py                     Entry point (dev + portable)
-├── requirements.txt
+├── main.py
 ├── config/
-│   ├── config.example.yaml     Template copied to config.yaml on first run
-│   └── config.yaml             Local config (git-ignored)
-├── logs/                       Runtime logs + persisted memory (git-ignored)
+│   ├── config.yaml             (created from example on first run)
+│   └── config.example.yaml
+├── src/
+│   ├── bot.py                  Main loop + backend wiring
+│   ├── decision_engine.py      Reply pipeline, guards, research integration
+│   ├── research.py             Scoring, query building, lookups, brief formatting
+│   ├── personality.py          System prompt builder
+│   ├── llm_client.py           Multi-provider LLM client
+│   ├── gemini_client.py
+│   ├── chat/
+│   │   ├── base.py
+│   │   ├── simulated.py
+│   │   └── sc2_stub.py         OCR + keyboard backend
+│   ├── anti_spam.py
+│   ├── commands.py
+│   ├── config_loader.py
+│   ├── diagnostics.py
+│   ├── game_requests.py
+│   ├── logger.py
+│   ├── memory.py
+│   ├── models.py
+│   ├── names.py
+│   ├── paths.py
+│   └── triggers.py
 ├── tools/
-│   └── measure_chat_region.py  Helper for OCR region calibration
-└── src/
-    ├── anti_spam.py            Cooldowns, per-minute caps, mute list
-    ├── bot.py                  Orchestrator — wires everything together
-    ├── chat/
-    │   ├── base.py             ChatBackend interface
-    │   ├── sc2_stub.py         Live SC2 OCR + keyboard backend
-    │   └── simulated.py        In-memory simulated backend
-    ├── commands.py             Owner command handler
-    ├── config_loader.py        Pydantic config + env overrides
-    ├── decision_engine.py      Reply pipeline + output guards
-    ├── diagnostics.py          Startup health checks
-    ├── game_requests.py        Lobby/game-request detection
-    ├── gemini_client.py        Standalone Gemini client (legacy)
-    ├── llm_client.py           Multi-provider LLM client
-    ├── logger.py               Rich console + rotating file logger
-    ├── memory.py               Per-player rolling history
-    ├── models.py               ChatMessage, Channel, GameRequestInfo
-    ├── names.py                Player-name cleanup + memory keys
-    ├── paths.py                App-root resolution (dev + frozen)
-    ├── personality.py          System prompt builder
-    ├── research.py             Scoring, query building, lookups, brief formatting
-    └── triggers.py             Canned regex triggers
+│   └── measure_chat_region.py
+├── scripts/
+│   ├── build_portable.bat
+│   └── build_portable.sh
+└── portable/                   Portable build scaffolding
 ```
 
 ---
@@ -593,7 +555,7 @@ If the bot is answering factual questions wrong, check whether `Researching ...`
 
 ### Debugging OCR
 
-If `RECV` never fires in `sc2_stub` mode:
+If `recv` never fires in `sc2_stub` mode:
 
 1. Confirm `chat_region` matches the on-screen chat box (`[left, top, WIDTH, HEIGHT]`).
 2. Confirm Tesseract is reachable (startup diagnostics print the detected path and version).
